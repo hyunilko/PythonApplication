@@ -53,7 +53,6 @@ def payload_to_text_or_hex(payload: bytes) -> str:
 def _hexdump(b: bytes) -> str:
     return " ".join(f"{x:02X}" for x in b)
 
-
 def _build_pcan_fd_kwargs(
     f_clock: Optional[int],
     f_clock_mhz: Optional[int],
@@ -63,8 +62,8 @@ def _build_pcan_fd_kwargs(
 ) -> dict:
     defaults = dict(
         f_clock_mhz=80,
-        nom_brp=2,  nom_tseg1=33, nom_tseg2=6, nom_sjw=1,
-        data_brp=2, data_tseg1=6,  data_tseg2=1, data_sjw=1,
+        nom_brp=2,  nom_tseg1=33, nom_tseg2=6, nom_sjw=1, # norminal bitrate = f_clock / (brp * (sjw + tseg1 + tseg2)) = 80 MHz / (2 * (1 + 33 + 6))) = 1 Mbps
+        data_brp=2, data_tseg1=6,  data_tseg2=1, data_sjw=1, # Data bitrate = f_clock / (brp * (sjw + tseg1 + tseg2)) = 80 MHz / (2 * (1 + 6 + 1))) = 5 Mbps
     )
     kw = defaults.copy()
     if f_clock is not None:
@@ -137,22 +136,25 @@ class CanIsoTpSender:
         extended: bool = False,
         # ISO-TP params
         stmin: int = 0,
-        blocksize: int = 8,
-        tx_data_length: int = 8,
-        tx_data_min_length: Optional[int] = None,
-        override_receiver_stmin: Optional[float] = None,
-        rx_flowcontrol_timeout: int = 1000,
-        rx_consecutive_frame_timeout: int = 1000,
+        blocksize: int = 0,                     # <= 기본 0 (무한 블록)
+        tx_data_length: int = 64,               # <= FD면 64 권장
+        tx_data_min_length: Optional[int] = 64, # <= FD 고정 패딩
+        override_receiver_stmin: Optional[float] = 0.0,
+        rx_flowcontrol_timeout: int = 7000,     # <= 7s
+        rx_consecutive_frame_timeout: int = 7000,  # <= 7s
         tx_padding: Optional[int] = 0x00,
         bitrate_switch: bool = False,
         default_target_address_type: isotp.TargetAddressType = isotp.TargetAddressType.Physical,
         blocking_send: bool = False,
         # App behavior
         eol: str = "none",
-        timeout_s: float = 2.0,
+        timeout_s: float = 3.0,
         ifg_us: int = 3000,
         # Save
         save_path: Optional[str] = None,
+        # NEW: allow > 4095B First Frame (32-bit length)
+        max_frame_size: int = 256 * 1024,       # <= 256 KiB
+        wftmax: int = 8,                         # <= Wait FC max
     ):
         self.channel = channel
         self.bitrate = int(bitrate)
@@ -172,8 +174,9 @@ class CanIsoTpSender:
         self.params = dict(
             stmin=int(stmin),
             blocksize=int(blocksize),
-            tx_data_length=int(tx_data_length if (fd and tx_data_length == 8) is False else (64 if fd else 8)),
-            tx_data_min_length=(None if tx_data_min_length is None else int(tx_data_min_length)),
+            wftmax=int(wftmax),                 # NEW
+            tx_data_length=int(64 if fd else 8),
+            tx_data_min_length=int(64 if fd else 8),
             override_receiver_stmin=override_receiver_stmin,
             rx_flowcontrol_timeout=int(rx_flowcontrol_timeout),
             rx_consecutive_frame_timeout=int(rx_consecutive_frame_timeout),
@@ -182,6 +185,7 @@ class CanIsoTpSender:
             bitrate_switch=bool(bitrate_switch),
             default_target_address_type=default_target_address_type,
             blocking_send=bool(blocking_send),
+            max_frame_size=int(max_frame_size), # NEW: 32-bit FF 허용치 상향
         )
 
         self.eol = eol
@@ -240,8 +244,8 @@ class CanIsoTpSender:
 
         def _on_isotp_error(err: isotp.IsoTpError):
             log.warning("IsoTP error: %s: %s", err.__class__.__name__, str(err))
-
-        self.notifier = can.Notifier(self.bus, listeners=[], timeout=0.05)
+        # Notifier 타임슬라이스 단축: 50ms -> 5ms
+        self.notifier = can.Notifier(self.bus, listeners=[], timeout=0.005)
         self.stack = isotp.NotifierBasedCanStack(self.bus, self.notifier, address=address,
                                                  error_handler=_on_isotp_error, params=self.params)
         self.stack.start()
@@ -356,12 +360,12 @@ def _build_argparser() -> argparse.ArgumentParser:
 
     # ISO-TP params
     p.add_argument("--stmin", type=lambda x: int(x, 0), default=0)
-    p.add_argument("--bs", type=int, default=8)
-    p.add_argument("--tx_data_length", type=int, default=8)
+    p.add_argument("--bs", type=int, default=0)
+    p.add_argument("--tx_data_length", type=int, default=64)
     p.add_argument("--tx_data_min_length", type=int, default=None)
     p.add_argument("--override_receiver_stmin", type=float, default=None)
-    p.add_argument("--rx_fc_timeout", type=int, default=1000)
-    p.add_argument("--rx_cf_timeout", type=int, default=5000)
+    p.add_argument("--rx_fc_timeout", type=int, default=5000)
+    p.add_argument("--rx_cf_timeout", type=int, default=7000)
     p.add_argument("--tx_padding", type=lambda x: int(x, 0), default=0x00)
     p.add_argument("--can_fd_brs", action="store_true")
 
@@ -370,7 +374,7 @@ def _build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=2.0)
     p.add_argument("--blocking_send", action="store_true")
     p.add_argument("--verbose", action="store_true")
-    p.add_argument("--ifg-us", dest="ifg_us", type=int, default=3000)
+    p.add_argument("--ifg-us", dest="ifg_us", type=int, default=5000)
 
     # Save file
     p.add_argument("--save", dest="save_path", default=None, help="메시지 기록 파일 경로 (2줄/메시지: MsgID, Payload)")

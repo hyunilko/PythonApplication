@@ -1,20 +1,20 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
 can_custom_tp_receiver.py
 
-프레이밍 규약:
-  - frame[0] = HDR (1B)
-      * bit7 = 0 → MIDDLE 프레임, bit6..0 = SEQ (0..127)
-      * bit7 = 1 → LAST   프레임, bit6..0 = last_len (1..63)
-  - frame[1:64] = DATA 63B (LAST에서는 last_len 만큼 유효, 나머지 0 패딩)
+Wire format per frame (CAN FD 64B):
+  [HDR:2][PAYLOAD<=62]
+  - HDR1: bit7 = 0 (MIDDLE) / 1 (LAST), bit6 = reserved(0), bits5-0 = SEQ high (6 bits)
+  - HDR2: SEQ low (8 bits)
+  => SEQ is 14 bits total: 0..16383
 
 기능:
   - PCANManager로부터 CAN FD 프레임(최대 64B)을 받아 위 규약에 따라 조립
   - CAN ID별 동시 조립 상태 관리
   - 콜백 기반(start_rx) 또는 폴링 기반(start_polling/receive_packet) 지원
-  - **완성 패킷 조립 시 hexdump 콘솔 출력(코드 검증용)**
 
 단독 실행 예:
   python can_custom_tp_receiver.py --channel PCAN_USBBUS1 --bitrate-fd "..." --filter-ids "0xD1,0x200-0x20F"
@@ -28,6 +28,7 @@ import queue
 import argparse
 import re
 import sys
+from datetime import datetime
 
 try:
     from pcan_manager import PCANManager
@@ -83,6 +84,13 @@ class _AsmState:
 
     def touch(self):
         self.last_ts = time.time()
+
+
+# ---------- 상수 (14-bit SEQ) ----------
+CHUNK_DATA_MAX = 62
+HDR_LAST_BIT   = 0x80
+SEQ_HIGH_MASK  = 0x3F   # bits5-0
+MAX_SEQ        = 0x3FFF # 16383
 
 
 # ---------- 메인 클래스 ----------
@@ -204,7 +212,7 @@ class CanCustomTpReceiver:
     def stop_polling(self):
         self.stop_rx()
 
-    def receive_packet(self, timeout_s: float = 1.0, verbose: bool = False) -> Optional[Tuple[bytes, int]]:
+    def receive_packet(self, timeout_s: float = 1.0) -> Optional[Tuple[bytes, int]]:
         """
         조립 완료 패킷을 (data, can_id)로 반환. 타임아웃 시 None.
         start_rx/start_polling 여부와 무관하게 사용할 수 있음.
@@ -220,33 +228,34 @@ class CanCustomTpReceiver:
 
     @staticmethod
     def _hexdump_print(can_id: int, payload: bytes):
-        ts = time.strftime("%H:%M:%S")
-        n = len(payload)
-        print(f"[{ts}] [RX-COMP] id=0x{can_id:X}, len={n}", flush=True)
-        for off in range(0, n, 16):
-            chunk = payload[off:off+16]
-            hexpart = " ".join(f"{b:02X}" for b in chunk)
-            ascii_part = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
-            print(f"{off:04X}  {hexpart:<47}  {ascii_part}", flush=True)
-        if n == 0:
-            print("0000", flush=True)
-        print("", flush=True)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        length = (
+            int(payload[0])
+            | (int(payload[1]) << 8)
+            | (int(payload[2]) << 16)
+            | (int(payload[3]) << 24)
+        )
+        msg_id = payload[4]
+        print(f"[{ts}] [RX-COMP] msg_id=0x{msg_id:X}, len={length}", flush=True)
 
     def _handle_raw_frame(self, can_id: int, frame: bytes):
         """
-        수신한 "단일 CAN 프레임"을 프레이밍 규약에 맞춰 조립 처리.
-        frame: 최대 64B (frame[0]=HDR, frame[1:]=DATA 최대 63B)
+        수신한 "단일 CAN 프레임"을 새로운 프레이밍 규약에 맞춰 조립 처리.
+        frame: 최대 64B (frame[0:2]=HDR, frame[2:]=DATA 최대 62B)
         """
         if not self._pass_filter(can_id):
             return
-        if not frame:
+        if len(frame) < 2:
             return
 
-        hdr = frame[0]
-        data = frame[1:64]
+        hdr1 = frame[0]
+        hdr2 = frame[1]
+        data = frame[2:64]  # 최대 62B
 
-        is_last = bool(hdr & 0x80)
-        low7 = hdr & 0x7F
+        is_last = bool(hdr1 & HDR_LAST_BIT)
+        seq_high = hdr1 & SEQ_HIGH_MASK  # 상위 6비트
+        seq_low  = hdr2
+        seq = ((seq_high << 8) | seq_low) & MAX_SEQ  # 14-bit sequence number
 
         st = self._asm.get(can_id)
         if st is None:
@@ -256,36 +265,29 @@ class CanCustomTpReceiver:
         st.touch()
 
         if is_last:
-            last_len = low7
-            if last_len == 0 or last_len > 63:
-                st.reset()
-                return
-            tail = data[:last_len]
-
+            # LAST 프레임 - 항상 62바이트 전체를 사용
             if not st.started:
-                # 단일 LAST → 바로 완성 (hexdump 출력)
-                payload = bytes(tail)
+                payload = bytes(data)
                 self._hexdump_print(can_id, payload)
                 self._on_completed(can_id, payload)
                 st.reset()
                 return
             else:
-                st.buf += tail
+                st.buf += data
                 payload = bytes(st.buf)
                 self._hexdump_print(can_id, payload)
                 self._on_completed(can_id, payload)
                 st.reset()
                 return
 
-        # MIDDLE
-        seq = low7  # 0..127
+        # MIDDLE 프레임
         if (not st.started) or (seq == 0):
             st.buf.clear()
             st.started = True
             st.last_seq = seq
         else:
             if st.last_seq is not None:
-                exp = (st.last_seq + 1) & 0x7F
+                exp = (st.last_seq + 1) & MAX_SEQ  # 14-bit wrap
                 if seq != exp:
                     st.buf.clear()
                     st.started = True
@@ -404,13 +406,13 @@ def main():
         print(f"[ERR] pcan_manager import 실패: {_pcan_import_err}", file=sys.stderr)
         sys.exit(2)
 
-    parser = argparse.ArgumentParser(description="CAN data receiver (HDR+DATA[63] framing, hexdump on complete)")
+    parser = argparse.ArgumentParser(description="CAN data receiver (HDR[2]+DATA[62] framing, 14-bit SEQ)")
     parser.add_argument("--channel", default="PCAN_USBBUS1", help="PCAN channel (default: PCAN_USBBUS1)")
     parser.add_argument(
         "--bitrate-fd",
         default=(
-            "f_clock=80000000,nom_brp=2,nom_tseg1=33,nom_tseg2=6,nom_sjw=1,"
-            "data_brp=2,data_tseg1=6,data_tseg2=1,data_sjw=1,data_ssp_offset=14"
+            "f_clock=80000000,nom_brp=2,nom_tseg1=33,nom_tseg2=6,nom_sjw=1," # norminal bitrate = f_clock / (brp * (sjw + tseg1 + tseg2)) = 80 MHz / (2 * (1 + 33 + 6))) = 1 Mbps
+            "data_brp=2,data_tseg1=6,data_tseg2=1,data_sjw=1,data_ssp_offset=14"  # Data bitrate = f_clock / (brp * (sjw + tseg1 + tseg2)) = 80 MHz / (2 * (1 + 6 + 1))) = 5 Mbps
         ),
         help="PCAN-FD bitrate string"
     )
@@ -448,7 +450,7 @@ def main():
         else:
             while True:
                 pkt = rx.receive_packet(timeout_s=float(args.timeout_s))
-                _ = pkt
+                _   = pkt
     except KeyboardInterrupt:
         print("\n[INFO] Stopping...", flush=True)
     except Exception as e:

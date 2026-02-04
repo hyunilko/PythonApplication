@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+  #!/usr/bin/env python3
+  # -*- coding: utf-8 -*-
 """
 can_custom_tp_send_profilecfg.py
 
@@ -155,13 +155,13 @@ def main() -> int:
 
     # 2) Custom-TP Sender 준비
     sender = CanCustomTpSender(
-        channel      = args.channel,
-        bitrate_fd   = args.bitrate_fd,
-        can_id_11bit = args.can_id,
-        app_msg_id   = app_msg_id,        # 텍스트 모드용 기본 MsgID (여기선 큰 의미 X)
-        append_lf    = False,             # binary payload: LF 붙이면 안됨
-        frame_gap_us = args.ifg_us,
-        cmd_gap_ms   = args.cmd_gap_ms,
+        channel=args.channel,
+        bitrate_fd=args.bitrate_fd,
+        can_id_11bit=args.can_id,
+        app_msg_id=app_msg_id,     # 텍스트 모드용 기본 MsgID (여기선 큰 의미 X)
+        append_lf=False,           # binary payload: LF 붙이면 안됨
+        frame_gap_us=args.ifg_us,
+        cmd_gap_ms=args.cmd_gap_ms,
     )
 
     try:

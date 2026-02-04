@@ -57,7 +57,8 @@ def _parse_filter_ids(text: str) -> Optional[Set[int]]:
             continue
         if "-" in tok:
             a, b = tok.split("-", 1)
-            lo = int(a, 0); hi = int(b, 0)
+            lo = int(a, 0)
+            hi = int(b, 0)
             if lo > hi:
                 lo, hi = hi, lo
             out.update(range(lo, hi + 1))
@@ -150,8 +151,8 @@ class SendWorker(QThread):
         try:
             total = len(self.lines)
             if hasattr(self.sender, "send_lines"):
-                i = 0
-                for i, (line, _rx) in enumerate(self.sender.send_lines(self.lines), 1):
+                eol_name = "none"
+                for i, (line, _rx) in enumerate(self.sender.send_lines(self.lines, eol=eol_name), 1):
                     if self._stop:
                         break
                     self.lineSent.emit(line)
@@ -217,8 +218,9 @@ class PacketLoggerWorker(QThread):
                     continue
                 try:
                     hex_payload = _hexdump_bytes(payload)
-                    total_hex_len = (1 + len(payload)) * 2
-                    self._file.write(f"MSG_ID: 0x{int(msg_id):X} LEN={total_hex_len}\n")
+                    total_hex_len = len(payload)
+                    now_str = datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")[:-3]
+                    self._file.write(f"[{now_str}] MSG_ID: 0x{int(msg_id):X} LEN={total_hex_len}\n")
                     self._file.write(hex_payload + "\n\n")
                     self._write_count += 1
                     if (self._write_count % self._flush_every) == 0:
@@ -307,7 +309,7 @@ class MainWindow(QMainWindow):
         # ---------------- 상단: 연결/수신 설정 ----------------
         self.edChannel = QLineEdit("PCAN_USBBUS1")
         self.chkFd = QCheckBox("FD"); self.chkFd.setChecked(True)
-        self.chkBRS = QCheckBox("BRS"); self.chkBRS.setChecked(False)
+        self.chkBRS = QCheckBox("BRS"); self.chkBRS.setChecked(True)
         self.chkExtended = QCheckBox("Extended(29-bit)"); self.chkExtended.setChecked(False)
 
         self.edBitrateFd = QLineEdit(
@@ -321,7 +323,7 @@ class MainWindow(QMainWindow):
         self.edRxId = QLineEdit("0xC8")
 
         # 송신 IFG, 수신 타임아웃
-        self.edIfg = QSpinBox(); self.edIfg.setRange(0, 20000); self.edIfg.setValue(3000)
+        self.edIfg = QSpinBox(); self.edIfg.setRange(0, 20000); self.edIfg.setValue(5000)
         self.edTimeout = QSpinBox(); self.edTimeout.setRange(1, 120); self.edTimeout.setValue(30)
         self.chkVerbose = QCheckBox("RX verbose"); self.chkVerbose.setChecked(False)
 
@@ -333,6 +335,10 @@ class MainWindow(QMainWindow):
         # 필터
         self.edFilterIds = QLineEdit("")  # 빈칸=전체
         self.edFilterIds.setPlaceholderText("예: 0xC8, 0x200-0x20F  (빈칸=전체)")
+
+        # 강제 FlowControl 체크박스 (기본 ON)
+        self.chkForceRawFC = QCheckBox("강제 FlowControl (STmin=0, BS=0)")
+        self.chkForceRawFC.setChecked(True)
 
         self.btnConnect = QPushButton("Connect")
         self.btnDisconnect = QPushButton("Disconnect"); self.btnDisconnect.setEnabled(False)
@@ -358,8 +364,10 @@ class MainWindow(QMainWindow):
         row2.addWidget(QLabel("EOL")); row2.addWidget(self.cbEol)
         row2.addSpacing(8)
         row2.addWidget(QLabel("Filter IDs")); row2.addWidget(self.edFilterIds)
-        row2.addStretch(1)
+        row2.addSpacing(8)
         row2.addWidget(self.chkVerbose)
+        row2.addSpacing(8)
+        row2.addWidget(self.chkForceRawFC)
         row2.addSpacing(8)
         row2.addWidget(self.btnConnect); row2.addWidget(self.btnDisconnect)
 
@@ -405,7 +413,7 @@ class MainWindow(QMainWindow):
         self.consoleInput.setPlaceholderText("단일 명령 입력. ↑/↓=히스토리, Ctrl+L=클리어")
         self.hist: List[str] = []; self.hidx: int = 0
 
-        # 메모리/성능 보호: 최대 라인 제한
+        # 메모리/성능 보호
         self.console.document().setMaximumBlockCount(5000)
         self.log.document().setMaximumBlockCount(2000)
 
@@ -486,6 +494,35 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            import glob
+
+            # 이전 로그 삭제
+            try:
+                log_files = glob.glob("*.log")
+                if not log_files:
+                    self._append_log("[INFO] 기존 .log 파일 없음 → 삭제 생략")
+                else:
+                    deleted = 0
+                    for f in log_files:
+                        try:
+                            os.remove(f)
+                            deleted += 1
+                            self._append_log(f"[INFO] 이전 로그 삭제: {f}")
+                        except Exception as e:
+                            self._append_log(f"[WARN] 로그 삭제 실패 ({f}): {e}")
+                    self._append_log(f"[INFO] 기존 .log {deleted}개 삭제 완료")
+            except Exception as e:
+                self._append_log(f"[WARN] 로그 삭제 중 예외: {e}")
+
+            # 강제 FlowControl 체크박스 → 환경변수
+            force_raw_fc = self.chkForceRawFC.isChecked()
+            if force_raw_fc:
+                os.environ["FORCE_RAW_FC"] = "1"
+                self._append_log("[INFO] FORCE_RAW_FC=1 (체크박스 설정 적용)")
+            else:
+                os.environ.pop("FORCE_RAW_FC", None)
+                self._append_log("[INFO] FORCE_RAW_FC=0 (체크박스 설정 적용)")
+
             channel = self.edChannel.text().strip()
             fd = self.chkFd.isChecked()
             brs = self.chkBRS.isChecked()
@@ -502,15 +539,26 @@ class MainWindow(QMainWindow):
                 txid=txid,
                 rxid=rxid,
                 extended=extended,
+
+                # ISO-TP (대용량/안정성 위주)
                 stmin=0,
                 blocksize=0,
-                rx_flowcontrol_timeout=5000,
-                rx_consecutive_frame_timeout=5000,
+                wftmax=8,
+                rx_flowcontrol_timeout=7000,
+                rx_consecutive_frame_timeout=7000,
                 tx_data_length=(64 if fd else 8),
                 tx_data_min_length=(64 if fd else 8),
                 tx_padding=0x00,
                 bitrate_switch=brs,
                 blocking_send=False,
+                max_frame_size=256*1024,
+
+                # App
+                eol=self.cbEol.currentText(),
+                timeout_s=float(self.edTimeout.value()),
+                ifg_us=int(self.edIfg.value()),
+
+                save_path=None,
             )
 
             # TX connect
@@ -525,7 +573,7 @@ class MainWindow(QMainWindow):
                 if fd and fd_kwargs:
                     self._append_log("[WARN] CanIsoTpSender.connect()가 FD 타이밍 kwargs를 지원하지 않습니다.")
 
-            # FD 타이밍 setter 시도(선택)
+            # FD 타이밍 setter 시도
             for name in ("set_fd_timings", "configure_fd", "set_pcan_fd_timing"):
                 if hasattr(self.sender, name) and fd and fd_kwargs:
                     try:
@@ -535,17 +583,19 @@ class MainWindow(QMainWindow):
                     except Exception as e:
                         self._append_log(f"[WARN] {name} 호출 실패: {e}")
 
-            # BRS 설정(지원 시)
+            # BRS 설정
             for name in ("set_bitrate_switch", "set_brs", "set_can_fd_brs", "enable_brs"):
                 if hasattr(self.sender, name):
                     try:
                         getattr(self.sender, name)(brs)
                     except TypeError:
-                        try: getattr(self.sender, name)(bitrate_switch=brs)
-                        except Exception: pass
+                        try:
+                            getattr(self.sender, name)(bitrate_switch=brs)
+                        except Exception:
+                            pass
                     break
 
-            # ISO-TP 파라미터 강제(선택)
+            # ISO-TP 파라미터 강제
             if hasattr(self.sender, "set_isotp_params"):
                 try:
                     self.sender.set_isotp_params(
@@ -572,9 +622,13 @@ class MainWindow(QMainWindow):
                     class _WrapMgr:
                         def __init__(self, b, txid, rxid, ext, fd):
                             self._bus = b
-                            self.txid = txid; self.rxid = rxid
-                            self.extended = ext; self.fd = fd
-                        def get_bus(self): return self._bus
+                            self.txid = txid
+                            self.rxid = rxid
+                            self.extended = ext
+                            self.fd = fd
+
+                        def get_bus(self):
+                            return self._bus
                     rx_mgr = _WrapMgr(bus_from_sender, txid, rxid, extended, fd)
                     bus_for_tap = bus_from_sender
 
@@ -597,9 +651,14 @@ class MainWindow(QMainWindow):
                 class _MiniMgr:
                     def __init__(self, b, txid, rxid, ext, fd):
                         self._bus = b
-                        self.txid = txid; self.rxid = rxid
-                        self.extended = ext; self.fd = fd
-                    def get_bus(self): return self._bus
+                        self.txid = txid
+                        self.rxid = rxid
+                        self.extended = ext
+                        self.fd = fd
+
+                    def get_bus(self):
+                        return self._bus
+
                 rx_mgr = _MiniMgr(bus, txid, rxid, extended, fd)
                 bus_for_tap = bus
 
@@ -607,7 +666,7 @@ class MainWindow(QMainWindow):
             self._rx_mgr_owned = (bus_for_tap is not None)
 
             # ---- 로그 파일 준비 ----
-            ts = datetime.now().strftime("%Y-%m-%d %H-%M-%S")  # Windows ':' → '-'
+            ts = datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")[:-3]
             log_name = f"radar packet {ts}.log"
             log_path = os.path.abspath(log_name)
             self.loggerWorker = PacketLoggerWorker(log_path, flush_every=20)
@@ -622,7 +681,24 @@ class MainWindow(QMainWindow):
             filter_ids = _parse_filter_ids(self.edFilterIds.text())
             self._rx_receiver = CanIsoTpReceiver(rx_mgr, filter_can_ids=filter_ids)
 
-            # 콜백(백그라운드 스레드) → 메인 스레드 시그널만 발생
+            applied = False
+            for name in ("set_isotp_params", "set_fc_params", "configure_fc", "configure_flow_control"):
+                if hasattr(self._rx_receiver, name):
+                    try:
+                        getattr(self._rx_receiver, name)(stmin=0, blocksize=0, wftmax=8)
+                        self._append_log(f"[INFO] RX FC params applied via {name}(stmin=0, blocksize=0)")
+                        applied = True
+                        break
+                    except Exception as e:
+                        self._append_log(f"[WARN] {name} 실패: {e}")
+
+            if not applied:
+                if force_raw_fc:
+                    self._append_log("[INFO] RX FC API 없음 → Raw FC 강제 모드(FORCE_RAW_FC=1) 사용 중")
+                else:
+                    self._append_log("[WARN] RX FC 파라미터 API 없음 + Raw FC 강제모드 OFF 상태입니다.")
+
+            # 콜백(완성 패킷)
             def _on_complete_packet(payload: bytes, msg_id: int):
                 try:
                     if self.loggerWorker is not None:
@@ -634,7 +710,6 @@ class MainWindow(QMainWindow):
             started_callback = False
             try:
                 self._rx_receiver.start_rx(on_packet=_on_complete_packet)
-                # RAW 프레임 요약 로그 끄기 (지원 시)
                 if hasattr(self._rx_receiver, "set_raw_tap"):
                     self._rx_receiver.set_raw_tap(False)
                 started_callback = True
@@ -686,11 +761,18 @@ class MainWindow(QMainWindow):
         self.uiBus.rx_bin.emit(msg_id, b)
 
     def _append_console_hex(self, msg_id: int, data: bytes):
+        MAX_BYTES_SHOWN = 64
         try:
-            hexstr = _hexdump_bytes(data)
-            if len(hexstr) > 4096:
-                hexstr = hexstr[:4096] + "..."
-            self.console.append(f"MSG ID: 0x{int(msg_id):X}\n{hexstr}\n")
+            shown = data[:MAX_BYTES_SHOWN]
+            hexstr = _hexdump_bytes(shown)
+            more = " ..." if len(data) > MAX_BYTES_SHOWN else ""
+
+            now_str = datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")[:-3]
+
+            self.console.append(
+                f"[{now_str}] MSG ID: 0x{int(msg_id):X} LEN={len(data)}\n"
+                f"DATA[:{len(shown)}]={hexstr}{more}\n"
+            )
         except Exception:
             pass
 
@@ -746,8 +828,10 @@ class MainWindow(QMainWindow):
         try:
             if self.sender is not None:
                 if hasattr(self.sender, "stop_repl"):
-                    try: self.sender.stop_repl()  # type: ignore[attr-defined]
-                    except Exception: pass
+                    try:
+                        self.sender.stop_repl()
+                    except Exception:
+                        pass
                 self.sender.disconnect()
         except Exception:
             pass
@@ -782,8 +866,10 @@ class MainWindow(QMainWindow):
         if self.sender is not None:
             try:
                 if hasattr(self.sender, "stop_repl"):
-                    try: self.sender.stop_repl()  # type: ignore[attr-defined]
-                    except Exception: pass
+                    try:
+                        self.sender.stop_repl()
+                    except Exception:
+                        pass
                 self.sender.disconnect()
             except Exception as e:
                 self._err(str(e))
@@ -802,15 +888,13 @@ class MainWindow(QMainWindow):
         if not lines:
             self._append_log("[WARN] 전송할 라인이 없습니다.")
             return
-        eol = self._selected_eol_str()
-        lines2 = [s + eol for s in lines]
 
         self.progress.setValue(0)
         self.btnSendAll.setEnabled(False)
         self.btnSendSelected.setEnabled(False)
         self.btnStop.setEnabled(True)
 
-        self.txWorker = SendWorker(self.sender, lines2)
+        self.txWorker = SendWorker(self.sender, lines)
         self.txWorker.progress.connect(self.progress.setValue)
         self.txWorker.lineSent.connect(self._on_tx_line_sent)
         self.txWorker.error.connect(self._on_worker_error)
@@ -825,7 +909,7 @@ class MainWindow(QMainWindow):
         self._append_log("[INFO] 전송 완료")
         self._reset_buttons()
 
-    def _reset_buttons(self):
+    def _reset_buttons(self): 
         self.btnSendAll.setEnabled(True)
         self.btnSendSelected.setEnabled(True)
         self.btnStop.setEnabled(False)
@@ -858,12 +942,13 @@ class MainWindow(QMainWindow):
         cmd = self.consoleInput.text().strip()
         if not cmd:
             return
-        self.hist.append(cmd); self.hidx = len(self.hist)
+        self.hist.append(cmd)
+        self.hidx = len(self.hist)
         self.console.append(f">>> {cmd}")
         try:
-            eol = self._selected_eol_str()
-            payload = (cmd + eol).encode("utf-8", "strict")
-            self.sender.send_line(cmd + eol)
+            eol_name = self.cbEol.currentText()
+            self.sender.send_line(cmd, eol=eol_name)
+            payload = (cmd + self._selected_eol_str()).encode("utf-8", "strict")
             self._append_log(f"[TX] {cmd}")
             self._append_log(f"[TX-HEX {len(payload)}B] {_hexdump_bytes(payload)}")
         except Exception as e:
@@ -874,18 +959,24 @@ class MainWindow(QMainWindow):
     # ↑/↓ 히스토리, Ctrl+L 클리어
     def eventFilter(self, obj, ev):
         if obj is self.consoleInput and ev.type() == QEvent.Type.KeyPress:
-            key = ev.key(); mod = ev.modifiers()
+            key = ev.key()
+            mod = ev.modifiers()
             if key == Qt.Key.Key_L and (mod & Qt.KeyboardModifier.ControlModifier):
-                self.console.clear(); self.consoleInput.clear(); return True
+                self.console.clear()
+                self.consoleInput.clear()
+                return True
             if key == Qt.Key.Key_Up:
                 if self.hist:
                     self.hidx = max(0, self.hidx - 1)
-                    self.consoleInput.setText(self.hist[self.hidx]); return True
+                    self.consoleInput.setText(self.hist[self.hidx])
+                    return True
             if key == Qt.Key.Key_Down:
                 if self.hist:
                     self.hidx = min(len(self.hist), self.hidx + 1)
-                    if self.hidx == len(self.hist): self.consoleInput.clear()
-                    else: self.consoleInput.setText(self.hist[self.hidx])
+                    if self.hidx == len(self.hist):
+                        self.consoleInput.clear()
+                    else:
+                        self.consoleInput.setText(self.hist[self.hidx])
                     return True
         return super().eventFilter(obj, ev)
 
@@ -903,7 +994,7 @@ class MainWindow(QMainWindow):
         except Exception:
             b = s.encode("utf-8", "replace")
         text_preview = s.rstrip("\r\n")
-        hex_preview  = _hexdump_bytes(b)
+        hex_preview = _hexdump_bytes(b)
         self._append_log(f"[TX] {text_preview}")
         self._append_log(f"[TX-HEX {len(b)}B] {hex_preview}")
 
