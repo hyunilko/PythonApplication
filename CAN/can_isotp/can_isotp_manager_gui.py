@@ -19,6 +19,11 @@ from typing import List, Optional, Set, Dict, Any
 import sys, os, re, binascii, queue
 from datetime import datetime
 
+# Add parent directory to path for cross-package imports
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QMessageBox,
@@ -31,7 +36,7 @@ import can
 
 # -------- Backend (TX) --------
 try:
-    from can_isotp_sender import CanIsoTpSender
+    from can_isotp.can_isotp_sender import CanIsoTpSender
     _be_err = None
 except Exception as e:
     CanIsoTpSender = None  # type: ignore
@@ -39,7 +44,7 @@ except Exception as e:
 
 # -------- Receiver (RX) --------
 try:
-    from can_isotp_receiver import CanIsoTpReceiver
+    from can_isotp.can_isotp_receiver import CanIsoTpReceiver
     _rx_err = None
 except Exception as e:
     CanIsoTpReceiver = None  # type: ignore
@@ -909,7 +914,7 @@ class MainWindow(QMainWindow):
         self._append_log("[INFO] 전송 완료")
         self._reset_buttons()
 
-    def _reset_buttons(self): 
+    def _reset_buttons(self):
         self.btnSendAll.setEnabled(True)
         self.btnSendSelected.setEnabled(True)
         self.btnStop.setEnabled(False)

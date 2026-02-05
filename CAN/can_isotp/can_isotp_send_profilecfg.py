@@ -1,5 +1,5 @@
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 can_isotp_send_profilecfg.py
 - One-click friendly: all inputs have sensible defaults so you can run directly in PyCharm.
@@ -15,9 +15,16 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+import sys
+import os
 
-import can_isotp_sender
-from mmwave_profile_cfg import MMWave_ProfileComCfg, hexdump, WIRE_SIZE
+# Add parent directory to path for cross-package imports
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
+from can_isotp import can_isotp_sender
+from can_isotp.mmwave_profile_cfg import MMWave_ProfileComCfg, hexdump, WIRE_SIZE
 
 log = logging.getLogger("can_isotp_send_profilecfg")
 
@@ -131,7 +138,7 @@ def main() -> int:
                 txt = body.decode("utf-8").rstrip("\r\n")
                 print(f"RX[MsgID={msg_id} {len(body)}B] ASCII: {txt}")
             except UnicodeDecodeError:
-                from mmwave_profile_cfg import hexdump as _hd
+                from can_isotp.mmwave_profile_cfg import hexdump as _hd
                 print(f"RX[MsgID={msg_id} {len(body)}B] HEX  : {_hd(body)}")
 
     finally:

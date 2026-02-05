@@ -28,10 +28,16 @@ import queue
 import argparse
 import re
 import sys
+import os
 from datetime import datetime
 
+# Add parent directory to path for cross-package imports
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 try:
-    from pcan_manager import PCANManager
+    from can_common.pcan_manager import PCANManager
 except Exception as e:
     PCANManager = None  # type: ignore
     _pcan_import_err = e
@@ -450,7 +456,7 @@ def main():
         else:
             while True:
                 pkt = rx.receive_packet(timeout_s=float(args.timeout_s))
-                _   = pkt
+                _ = pkt
     except KeyboardInterrupt:
         print("\n[INFO] Stopping...", flush=True)
     except Exception as e:

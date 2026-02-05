@@ -1,0 +1,26 @@
+1. CAN_python용 가상환경 (PyQt6): 
+cd Z                       : \Texas_Instruments\AWRL6844\Python_App\CAN_python
+
+# 가상환경 설치
+python -m venv .venv
+
+# 가상환경 활성화
+.\.venv\Scripts\Activate.ps1
+
+# pip 패키지 업그레이드
+python.exe -m pip install --upgrade pip
+
+# 패키지 설치
+pip install -r requirements.txt
+
+실행
+.\.venv\Scripts\python.exe can_custom_tp_manager_gui.py
+
+# 현재 사용자에게 영구 허용
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Python 경로 확인
+Get-Command python
+
+# 가상환경 비활성화
+deactivate

@@ -29,6 +29,11 @@ from typing import List, Optional, Set, Tuple, Callable
 import sys, os, re, binascii, queue
 from datetime import datetime
 
+  # Add parent directory to path for cross-package imports
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path: 
+    sys.path.insert(0, _parent_dir)
+
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QEvent
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFileDialog, QMessageBox,
@@ -40,7 +45,7 @@ import glob
 
   # -------- Backend (TX) --------
 try: 
-    from can_custom_tp_sender import CanCustomTpSender
+    from can_customtp.can_custom_tp_sender import CanCustomTpSender
     _be_err = None
 except Exception as e: 
     CanCustomTpSender = None  # type: ignore
@@ -48,7 +53,7 @@ except Exception as e:
 
   # -------- Receiver (RX) --------
 try: 
-    from can_custom_tp_receiver import CanCustomTpReceiver
+    from can_customtp.can_custom_tp_receiver import CanCustomTpReceiver
     _rx_err = None
 except Exception as e: 
     CanCustomTpReceiver = None  # type: ignore
@@ -56,7 +61,7 @@ except Exception as e:
 
   # -------- PCANManager (fallback용) --------
 try: 
-    from pcan_manager import PCANManager
+    from can_common.pcan_manager import PCANManager
 except Exception: 
     PCANManager = None  # type: ignore
 
@@ -800,86 +805,86 @@ def   __init__(self)         :
         self.txWorker.finishedOk.connect(self._on_worker_done)
         self.txWorker.start()
 
-    def _on_worker_error(self, msg: str):
+    def _on_worker_error(self, msg: str): 
         self._append_log(f"[ERR] {msg}")
         self._reset_buttons()
 
-    def _on_worker_done(self):
+    def _on_worker_done(self): 
         self._append_log("[INFO] 전송 완료")
         self._reset_buttons()
 
-    def _reset_buttons(self):
+    def _reset_buttons(self): 
         self.btnSendAll.setEnabled(True)
         self.btnSendSelected.setEnabled(True)
         self.btnStop.setEnabled(False)
         self.progress.setValue(100)
         self.txWorker = None
 
-    def on_send_all(self):
+    def on_send_all(self): 
         lines = self._filter_lines(self.textEditor.toPlainText().splitlines())
         self._start_send(lines)
 
-    def on_send_selected(self):
+    def on_send_selected(self): 
         sel = self.listLines.selectedItems()
-        if sel:
+        if sel: 
             lines = [it.text() for it in sel]
-        else:
+        else: 
             cursor = self.textEditor.textCursor()
-            lines = [cursor.block().text()]
+            lines  = [cursor.block().text()]
         self._start_send(self._filter_lines(lines))
 
-    def on_stop(self):
-        if self.txWorker is not None:
+    def on_stop(self)            : 
+    if  self.txWorker is not None: 
             self.txWorker.stop()
             self._append_log("[INFO] 중지 요청됨")
 
-    # ---------- REPL ----------
-    def on_repl_enter(self):
-        if self.sender is None:
+      # ---------- REPL ----------
+    def on_repl_enter(self): 
+    if  self.sender is None: 
             self.console.append("[ERR] 연결되어 있지 않습니다.")
             return
         cmd = self.consoleInput.text().strip()
-        if not cmd:
+        if not cmd: 
             return
         self.hist.append(cmd); self.hidx = len(self.hist)
         self.console.append(f">>> {cmd}")
-        try:
+        try: 
             self._send_one_line_app(cmd)
-        except Exception as e:
+        except Exception as e: 
             self.console.append(f"[ERR] {e}")
-        finally:
+        finally: 
             self.consoleInput.clear()
 
-    # ↑/↓ 히스토리, Ctrl+L 클리어
-    def eventFilter(self, obj, ev):
-        if obj is self.consoleInput and ev.type() == QEvent.Type.KeyPress:
-            key = ev.key(); mod = ev.modifiers()
+      # ↑/↓ 히스토리, Ctrl+L 클리어
+    def eventFilter(self, obj, ev)                                    : 
+    if  obj is self.consoleInput and ev.type() == QEvent.Type.KeyPress: 
+               key  = ev.key(); mod = ev.modifiers()
             if key == Qt.Key_L and (mod & Qt.KeyboardModifier.ControlModifier):
                 self.console.clear(); self.consoleInput.clear(); return True
-            if key == Qt.Key_Up:
-                if self.hist:
+            if key == Qt.Key_Up: 
+            if self.hist       : 
                     self.hidx = max(0, self.hidx - 1)
                     self.consoleInput.setText(self.hist[self.hidx]); return True
-            if key == Qt.Key_Down:
-                if self.hist:
-                    self.hidx = min(len(self.hist), self.hidx + 1)
+            if key == Qt.Key_Down: 
+            if self.hist         : 
+                       self.hidx  = min(len(self.hist), self.hidx + 1)
                     if self.hidx == len(self.hist): self.consoleInput.clear()
                     else: self.consoleInput.setText(self.hist[self.hidx])
                     return True
         return super().eventFilter(obj, ev)
 
-    # 창 닫을 때 안전 정리
-    def closeEvent(self, ev):
-        try:
+      # 창 닫을 때 안전 정리
+    def closeEvent(self, ev): 
+        try                 : 
             self.on_disconnect()
-        except Exception:
+        except Exception: 
             pass
         super().closeEvent(ev)
 
 
-def main():
+def main(): 
     app = QApplication(sys.argv)
-    w = MainWindow()
+    w   = MainWindow()
     w.show()
     sys.exit(app.exec())
 

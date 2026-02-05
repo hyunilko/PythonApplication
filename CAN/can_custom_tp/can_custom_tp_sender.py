@@ -34,6 +34,11 @@ import sys
 import os
 import time
 
+# Add parent directory to path for cross-package imports
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 # ========= 기본 정책값 =========
 DEFAULT_CHANNEL: str = "PCAN_USBBUS1"
 DEFAULT_BITRATE_FD: str = (
@@ -58,7 +63,7 @@ MAX_SEQ = 0x3FFF           # 14-bit
 
 # ===== pcan_manager 백엔드 =====
 try:
-    from pcan_manager import PCANManager
+    from can_common.pcan_manager import PCANManager
 except Exception as _PM_EXC:
     PCANManager = None  # type: ignore
     _PM_IMPORT_ERROR = _PM_EXC
