@@ -1,4 +1,4 @@
-  #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 spi_data_capture_tool.py (Improved for AWRL6844 + FTDI(MPSSE) RX-only capture)
 
@@ -40,25 +40,22 @@ except ImportError:
     print("ERROR: ftd2xx library not found. Install with: pip install ftd2xx")
     sys.exit(1)
 
-# ======================== FTDI MPSSE Configuration (AN108) ========================
-FTDI_CFG_60MHZ_SYSCLK = b'\x8A'          # Disable Clk Divide by 5 -> 60MHz
-FTDI_CFG_NO_ADAPT_CLK = b'\x97'          # Turn Off Adaptive clocking
-FTDI_CFG_NO_3PHAS_CLK = b'\x8D'          # Disable 3 Phase Data Clocking
-FTDI_CFG_NO_LOOPBACK  = b'\x85'          # Disconnect TDI to TDO Loopback
+######################## Configuration bytestrings ######################################################
+FTDI_CFG_60MHZ_SYSCLK = b'\x8A'         # AN108 6.1:   Disable Clk Divide by 5, resulting in 60MHz system clock
+FTDI_CFG_NO_ADAPT_CLK = b'\x97'         # AN108 6.10:  Turn Off Adaptive clocking
+FTDI_CFG_NO_3PHAS_CLK = b'\x8D'         # AN108 6.4:   Disable 3 Phase Data Clocking
+FTDI_CFG_SET_CLK_DIV  = b'\x86'         # AN108 3.8.2: Set clk divisor, [0x86,0xValueL,0xValueH]
+FTDI_CFG_NO_LOOPBACK  = b'\x85'         # AN108 3.7.2: Disconnect TDI to TDO for Loopback
+FTDI_CFG_SPI_4PIN_CFG = b'\x80\x08\x0B' # AN108 3.6.1: Set Data bits LowByte [0x80,0xValue,0xDirection] (value and direction are bitmasks for FTDI pins)
+FTDI_CFG_SPI_WITH_GPIO = b'\x80\x08\x09'# AN108 3.6.1: Set Data bits LowByte [0x80,0xValue,0xDirection] (value and direction are bitmasks for FTDI pins)
 
-# Set Data bits LowByte [Value=0x08, Dir=0x0B]
-# Typical mapping used in TI reference:
-#  - bit0: SK (output)
-#  - bit1: DO (output)
-#  - bit2: DI (input)
-#  - bit3: CS (output, idle high)
-FTDI_CFG_SPI_4PIN_CFG = b'\x80\x08\x0B'
-
-# MPSSE Commands
-FTDI_CMD_CS_LOW      = b'\x80\x00\x0B'   # CS low
-FTDI_CMD_CS_HIGH     = b'\x80\x08\x0B'   # CS high
-FTDI_CMD_READ_BYTES  = b'\x20'           # Clock Data Bytes In on +ve edge MSB first
-FTDI_CMD_READ_GPIO   = b'\x81'           # Read Data bits LowByte
+######################### Command bytestrings ############################################################
+FTDI_CMD_CS_LOW       = b'\x80\x00\x0B' # AN108 3.6.1: Set Data bits LowByte [0x80,0xValue,0xDirection] (value and direction are bitmasks for FTDI pins)
+FTDI_CMD_CS_HIGH      = b'\x80\x08\x0B' # AN108 3.6.1: Set Data bits LowByte [0x80,0xValue,0xDirection] (value and direction are bitmasks for FTDI pins)
+FTDI_CMD_WRITE_BYTES  = b'\x11'         # AN108 3.3.2: Clock Data Bytes Out on -ve clock edge MSB first (no read) [0x11,LengthL,LengthH,byte0,...,byteN]
+FTDI_CMD_READ_BYTES   = b'\x20'         # AN108 3.3.5: Clock Data Bytes In on +ve clock edge MSB first (no write) [0x20,LengthL,LengthH]
+FTDI_CMD_RW_BYTES     = b'\x31'         # AN108 3.3.9: Clock Data Bytes In on +ve and Out on -ve MSB first [0x20,LengthL,LengthH,byte0,...,byteN]
+FTDI_CMD_READ_BITS    = b'\x81'         # AN108 3.6.3: Read Data bits LowByte, read the current state of the first 8 pins and send back 1 byte
 
 FTDI_MAX_CHUNK = 65536  # TI uses MAXSPISIZEFTDI=65536
 
@@ -122,7 +119,7 @@ def set_device(handle, clk_speed: int = 15_000_000, latency_timer: int = 1):
 
 def read_gpio(handle) -> int:
     """Read low byte GPIO state (8-bit)."""
-    handle.write(FTDI_CMD_READ_GPIO)
+    handle.write(FTDI_CMD_READ_BITS)
     res = handle.read(1)
     return int.from_bytes(res, "big")
 

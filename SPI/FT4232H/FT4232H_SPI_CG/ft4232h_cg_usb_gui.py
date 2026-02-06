@@ -1,22 +1,17 @@
-  #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-awrl_ftdi_spi_gui.py
+awrl_ftdi_spi_gui.py  (FW header = u32_to_be(cnt))
 
-Matches firmware behavior:
+Firmware:
+- adcDataPerFrame = 131072 bytes
+- 2 chunks x 65536 (MAXSPISIZEFTDI)
+- Frame header:
+    byte[0..3] = u32_to_be(cnt)
+    byte[4..]  = (i-4) & 0xFF sequence
 
-- Firmware sends adcDataPerFrame = 131072 bytes per frame
-- Transfer is done in 2 chunks of 65536 bytes (MAXSPISIZEFTDI)
-- Each chunk:
-    HOST_INTR LOW
-    MCSPI_transfer(dataSize=32, txBuf=uint32_t*, count=tempSize/4)
-    HOST_INTR HIGH
-
-Host side (FT4232H / ftd2xx / MPSSE):
+Host:
 - Wait HOST_INTR LOW before each chunk, then SPI read exactly 65536 bytes
-- Because firmware uses dataSize=32 + uint32_t* on little-endian MCU,
-  bytes appear reversed within each 32-bit word on the wire.
-  => Apply 32-bit byteswap on host to recover intended byte stream:
-     00 00 00 69 00 01 02 03 04 05 ...
+- Apply byteswap32 to reconstruct original byte stream as in adcbuffer
 """
 
 import sys
@@ -42,7 +37,7 @@ from PyQt6.QtWidgets import (
 
 # ---------------- Firmware-fixed sizes ----------------
 FW_FRAME_SIZE = 131072
-CHUNK_SIZE = 65536  # MAXSPISIZEFTDI
+CHUNK_SIZE = 65536
 CHUNKS_PER_FRAME = FW_FRAME_SIZE // CHUNK_SIZE
 
 # ======================== FTDI MPSSE Configuration ========================
@@ -71,16 +66,14 @@ def set_clk(handle, hz: int):
 def set_device(handle, clk_speed: int = 15000000, latency_timer: int = 1):
     handle.resetDevice()
 
+    # Purge stale RX data
     rx_bytes, tx_bytes, event_status = handle.getStatus()
     if rx_bytes > 0:
         handle.read(rx_bytes)
 
     handle.setUSBParameters(65535, 65535)
     handle.setChars(False, 0, False, 0)
-
-    # 너무 길면 문제시 대기가 길어짐. SPI read는 어차피 우리가 exact loop로 모음.
     handle.setTimeouts(5000, 5000)
-
     handle.setLatencyTimer(latency_timer)
     handle.setBitMode(0, 0)
     handle.setBitMode(0, 2)
@@ -120,15 +113,14 @@ def spi_read_exact(handle, length: int) -> bytes:
 
 def byteswap32_fast(data: bytes) -> bytes:
     """
-    Very fast 32-bit word byteswap using array('I').byteswap() (C-implemented).
-    Needed because firmware sends 32-bit words from little-endian memory with MSB-first shift.
+    Fast 32-bit word byteswap using array('I').byteswap().
+    Required because FW sends 32-bit words (dataSize=32) from little-endian memory with MSB-first shift.
     """
     if len(data) % 4 != 0:
         data = data + b"\x00" * (4 - (len(data) % 4))
 
     a = array.array("I")
     if a.itemsize != 4:
-        # Fallback (rare on Windows): slow path
         b = bytearray(data)
         for i in range(0, len(b), 4):
             b[i:i+4] = b[i:i+4][::-1]
@@ -161,7 +153,6 @@ def list_ftdi_devices() -> list[tuple[int, str, str]]:
 
 
 def intr_active_low(gpio_val: int, mask: int) -> bool:
-    # active when masked bits are 0
     return (gpio_val & mask) == 0
 
 
@@ -180,13 +171,35 @@ def wait_intr_low(dev_gpio, mask: int, timeout_s: float, poll_sleep_us: int) -> 
 
 
 def decode_fw_frame_no(u32_be: int) -> int:
+    # New FW: u32_to_be(cnt, byte_ptr) -> Host: read BE u32 그대로 cnt
+    return int(u32_be)
+
+
+def chunk1_signature(byteswapped: bool) -> bytes:
+    # byteswap ON이면 chunk1 시작이 FC FD FE FF로 보임
+    # byteswap OFF이면 wire order(=MSB-first of little-endian word)라서 FF FE FD FC로 보임
+    return b"\xFC\xFD\xFE\xFF" if byteswapped else b"\xFF\xFE\xFD\xFC"
+
+
+def looks_like_frame_start(chunk: bytes, byteswapped: bool) -> bool:
     """
-    FW: cnt(decimal) -> str(decimal) -> strtol(str, 16) -> u32_be 전송
-    PC: u32_be -> hex string -> int(hex_string, 10) 로 원래 cnt 복원
-    예) u32_be=0x311(785) -> "311" -> 311
+    Frame start (chunk0) heuristic (works even when frame_no > 0xFF):
+
+    - chunk1은 시작 4바이트가 (byteswap ON 기준) FC FD FE FF 이므로 배제
+    - chunk0는 [4..15]가 항상 00 01 02 ... 0B (FW가 i-4로 채움)
     """
-    s = format(u32_be, 'X')          # "311"
-    return int(s, 10)                # 311
+    if len(chunk) < 16:
+        return False
+
+    # Exclude chunk1
+    if chunk[:4] == chunk1_signature(byteswapped):
+        return False
+
+    # Check common sequence
+    if chunk[4:16] != bytes(range(0x00, 0x0C)):
+        return False
+
+    return True
 
 
 # ======================== Capture Worker ========================
@@ -206,6 +219,7 @@ class CaptureSettings:
     preview_every: int
     log_every: int
     byteswap32: bool
+    resync_on_start: bool
 
 
 class SpiCaptureWorker(QObject):
@@ -229,35 +243,26 @@ class SpiCaptureWorker(QObject):
 
         try:
             self.status.emit(f"Firmware frame size forced: {FW_FRAME_SIZE:,} bytes ({CHUNKS_PER_FRAME} x 64KB)")
-            self.status.emit(f"HOST_INTR mask: 0x{self.settings.host_intr_mask:02X}")
-            self.status.emit(f"byteswap32: {'ON' if self.settings.byteswap32 else 'OFF'} (recommended ON for dataSize=32)")
+            self.status.emit(f"HOST_INTR mask: 0x{self.settings.host_intr_mask:02X} (ready when GPIO&mask==0)")
+            self.status.emit(f"byteswap32: {'ON' if self.settings.byteswap32 else 'OFF'}")
+            self.status.emit(f"Resync on start: {'ON' if self.settings.resync_on_start else 'OFF'}")
 
+            # Open SPI device
             self._dev_spi = ftd.open(self.settings.spi_dev_index)
             self.status.emit(f"SPI device opened: index {self.settings.spi_dev_index}")
             set_device(self._dev_spi, self.settings.clock_hz, latency_timer=1)
             self.status.emit(f"SPI configured: {self.settings.clock_hz/1e6:.1f} MHz")
 
-            # Optional separate GPIO handle
+            # Open GPIO device
             if self.settings.device_type == "AOP" and self.settings.gpio_dev_index != self.settings.spi_dev_index:
                 self._dev_gpio = ftd.open(self.settings.gpio_dev_index)
                 set_device(self._dev_gpio, 1_000_000, latency_timer=1)
-                self.status.emit(f"GPIO device opened: index {self.settings.gpio_dev_index}")
+                self.status.emit(f"GPIO device opened: index {self.settings.gpio_dev_index} (separate)")
             else:
                 self._dev_gpio = self._dev_spi
+                self.status.emit("GPIO device: same as SPI device")
 
-            # Quick sanity: if mask bits are ALWAYS 0 for a while -> warning (means "always active")
-            zeros = 0
-            for _ in range(30):
-                v = read_gpio(self._dev_gpio)
-                if (v & self.settings.host_intr_mask) == 0:
-                    zeros += 1
-                time.sleep(0.005)
-            if zeros == 30:
-                self.status.emit(
-                    "Warning: (GPIO & mask) stayed 0 for 150ms -> HOST_INTR may look always-active.\n"
-                    "If you see instability, try mask 0x20 or 0x80 (single pin) instead of 0xA0."
-                )
-
+            # Output file
             if self.settings.save_to_file and self.settings.out_path:
                 dir_path = os.path.dirname(self.settings.out_path)
                 if dir_path:
@@ -265,7 +270,7 @@ class SpiCaptureWorker(QObject):
                 fout = open(self.settings.out_path, "wb", buffering=1024 * 1024)
                 self.status.emit(f"Saving to: {self.settings.out_path}")
 
-            self.status.emit("Waiting for data from radar sensor...")
+            self.status.emit("Waiting for sensor streaming...")
 
             frame_count = 0
             total_bytes = 0
@@ -274,35 +279,84 @@ class SpiCaptureWorker(QObject):
             target_frames = self.settings.num_frames if self.settings.num_frames > 0 else float("inf")
             total_for_progress = int(target_frames) if target_frames != float("inf") else 0
 
-            while self._running and frame_count < target_frames:
-                frame_no = None
-                first64 = None
-
-                # Stream per chunk (no need to hold full 128KB in RAM)
-                for chunk_idx in range(CHUNKS_PER_FRAME):
-                    wait_intr_low(
-                        self._dev_gpio,
-                        self.settings.host_intr_mask,
-                        timeout_s=5.0,
-                        poll_sleep_us=self.settings.poll_sleep_us,
-                    )
-
+            # --- resync on start ---
+            pending_chunk0 = None
+            if self.settings.resync_on_start:
+                self.status.emit("Syncing to frame boundary (looking for chunk0 header)...")
+                discards = 0
+                while self._running:
+                    wait_intr_low(self._dev_gpio, self.settings.host_intr_mask, 5.0, self.settings.poll_sleep_us)
                     raw = spi_read_exact(self._dev_spi, CHUNK_SIZE)
-
                     if self.settings.byteswap32:
                         raw = byteswap32_fast(raw)
 
-                    # parse header & preview from very first chunk
-                    if chunk_idx == 0:
-                        # header is bytes[0..3] big-endian
-                        raw_u32 = int.from_bytes(raw[0:4], "big")
-                        frame_no = decode_fw_frame_no(raw_u32)
-                        first64 = raw[:64]
+                    if looks_like_frame_start(raw, self.settings.byteswap32):
+                        pending_chunk0 = raw
+                        break
 
-                    if fout:
-                        fout.write(raw)
+                    discards += 1
+                    if discards % 5 == 0:
+                        b0 = " ".join(f"{x:02X}" for x in raw[:8])
+                        self.status.emit(f"Resync: discarded {discards} chunks (head={b0})")
 
-                # end of one frame
+                if pending_chunk0 is None and self._running:
+                    raise RuntimeError("Resync failed: no frame boundary detected")
+
+            # --- capture loop ---
+            while self._running and frame_count < target_frames:
+                # chunk0
+                if pending_chunk0 is not None:
+                    chunk0 = pending_chunk0
+                    pending_chunk0 = None
+                else:
+                    wait_intr_low(self._dev_gpio, self.settings.host_intr_mask, 5.0, self.settings.poll_sleep_us)
+                    chunk0 = spi_read_exact(self._dev_spi, CHUNK_SIZE)
+                    if self.settings.byteswap32:
+                        chunk0 = byteswap32_fast(chunk0)
+
+                # if resync enabled, ensure chunk0 is really frame start
+                if self.settings.resync_on_start and not looks_like_frame_start(chunk0, self.settings.byteswap32):
+                    b0 = " ".join(f"{x:02X}" for x in chunk0[:8])
+                    self.status.emit(f"Lost alignment, resyncing... (head={b0})")
+                    # find next real chunk0
+                    discards = 0
+                    while self._running:
+                        wait_intr_low(self._dev_gpio, self.settings.host_intr_mask, 5.0, self.settings.poll_sleep_us)
+                        raw = spi_read_exact(self._dev_spi, CHUNK_SIZE)
+                        if self.settings.byteswap32:
+                            raw = byteswap32_fast(raw)
+                        if looks_like_frame_start(raw, self.settings.byteswap32):
+                            pending_chunk0 = raw
+                            break
+                        discards += 1
+                    if pending_chunk0 is None:
+                        break
+                    continue
+
+                raw_u32 = int.from_bytes(chunk0[0:4], "big")
+                frame_no = decode_fw_frame_no(raw_u32)
+                first64 = chunk0[:64]
+
+                if fout:
+                    fout.write(chunk0)
+
+                # chunk1
+                wait_intr_low(self._dev_gpio, self.settings.host_intr_mask, 5.0, self.settings.poll_sleep_us)
+                chunk1 = spi_read_exact(self._dev_spi, CHUNK_SIZE)
+                if self.settings.byteswap32:
+                    chunk1 = byteswap32_fast(chunk1)
+
+                # sanity: second chunk should start with FC FD FE FF (byteswap ON 기준)
+                exp = chunk1_signature(self.settings.byteswap32)
+                if chunk1[:4] != exp:
+                    self.status.emit(
+                        f"Warning: chunk1 head unexpected: "
+                        f"{' '.join(f'{x:02X}' for x in chunk1[:8])}"
+                    )
+
+                if fout:
+                    fout.write(chunk1)
+
                 frame_count += 1
                 total_bytes += FW_FRAME_SIZE
 
@@ -311,7 +365,7 @@ class SpiCaptureWorker(QObject):
 
                 self.progress.emit(frame_count, total_for_progress)
 
-                if self.settings.preview_every > 0 and (frame_count % self.settings.preview_every) == 0 and first64 is not None:
+                if self.settings.preview_every > 0 and (frame_count % self.settings.preview_every) == 0:
                     self.preview.emit(first64)
 
                 if self.settings.log_every > 0 and (frame_count % self.settings.log_every) == 0:
@@ -367,8 +421,8 @@ class SpiCaptureWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AWRL6844 SPI Data Capture Tool (FT4232H / ftd2xx / FW=131072B)")
-        self.resize(980, 800)
+        self.setWindowTitle("AWRL6844 SPI Data Capture Tool (FW=u32_to_be(cnt))")
+        self.resize(980, 820)
 
         self.capture_thread: QThread | None = None
         self.capture_worker: SpiCaptureWorker | None = None
@@ -390,7 +444,7 @@ class MainWindow(QMainWindow):
 
         self.device_type_combo = QComboBox()
         self.device_type_combo.addItems(["AOP", "FCCSP"])
-        self.device_type_combo.currentTextChanged.connect(self._on_device_type_changed)
+        self.device_type_combo.setCurrentText("AOP")  # 기본값 유지
 
         self.spi_combo = QComboBox()
         self.gpio_combo = QComboBox()
@@ -418,15 +472,13 @@ class MainWindow(QMainWindow):
         intr_layout = QHBoxLayout(intr_group)
 
         self.intr_bit_combo = QComboBox()
-        # 펌웨어는 "1개 핀" 토글임. 보드/배선에 따라 bit5 또는 bit7일 가능성이 큼.
-        # 0xA0은 legacy(두 핀)용으로 남김.
         self.intr_bit_combo.addItems([
-            "Bit 4 (0x10)",
-            "Bit 5 (0x20)  <-- 추천 (single pin)",
-            "Bit 7 (0x80)  <-- 추천 (single pin)",
-            "Bits 5+7 (0xA0) legacy"
+            "Bit 4 (0x10)  (FCCSP typical)",
+            "Bit 5 (0x20)  (AOP single-pin recommended)",
+            "Bit 7 (0x80)  (AOP single-pin recommended)",
+            "Bits 5+7 (0xA0) (legacy)"
         ])
-        self.intr_bit_combo.setCurrentIndex(1)
+        self.intr_bit_combo.setCurrentIndex(3)  # 사용자가 바꾼 기본값 유지(0xA0)
 
         intr_layout.addWidget(QLabel("HOST_INTR mask:"))
         intr_layout.addWidget(self.intr_bit_combo, 2)
@@ -434,36 +486,39 @@ class MainWindow(QMainWindow):
         root.addWidget(intr_group)
 
         # Options
-        opt_group = QGroupBox("Capture Options (speed)")
+        opt_group = QGroupBox("Capture Options")
         opt_layout = QHBoxLayout(opt_group)
 
         self.clock_combo = QComboBox()
         self.clock_combo.addItems(["30000000", "24000000", "15000000", "12000000", "6000000", "1000000"])
-        self.clock_combo.setCurrentText("15000000")
+        self.clock_combo.setCurrentText("15000000")  # 기본값 유지
 
         self.spin_frames = QSpinBox()
         self.spin_frames.setRange(0, 1000000)
-        self.spin_frames.setValue(100)
+        self.spin_frames.setValue(100)  # 기본값 유지
         self.spin_frames.setSpecialValueText("Infinite")
 
         self.spin_poll_us = QSpinBox()
         self.spin_poll_us.setRange(0, 5000)
-        self.spin_poll_us.setValue(50)  # 10us도 가능하지만 USB/GPIO 폴링 부하 큼
+        self.spin_poll_us.setValue(50)  # 기본값 유지
 
         self.spin_flush = QSpinBox()
         self.spin_flush.setRange(0, 1000)
-        self.spin_flush.setValue(0)  # 속도 최우선: 프레임마다 flush 하지 않음(끝에서 flush)
+        self.spin_flush.setValue(0)  # 기본값 유지
 
         self.spin_preview = QSpinBox()
         self.spin_preview.setRange(0, 1000)
-        self.spin_preview.setValue(1)  # 비교용으로 1. 속도 올릴 땐 10~0 추천
+        self.spin_preview.setValue(1)  # 기본값 유지
 
         self.spin_log = QSpinBox()
         self.spin_log.setRange(1, 1000)
-        self.spin_log.setValue(1)  # 속도 올릴 땐 5~10 추천
+        self.spin_log.setValue(1)  # 기본값 유지
 
-        self.cb_byteswap = QCheckBox("byteswap32 (MUST for dataSize=32)")
-        self.cb_byteswap.setChecked(True)
+        self.cb_byteswap = QCheckBox("byteswap32 (ON recommended)")
+        self.cb_byteswap.setChecked(True)  # 기본값 유지
+
+        self.cb_resync = QCheckBox("Resync on start (recommended for Stop/Start)")
+        self.cb_resync.setChecked(True)  # 기본값 유지
 
         opt_layout.addWidget(QLabel("SPI Clock (Hz):"))
         opt_layout.addWidget(self.clock_combo)
@@ -478,6 +533,7 @@ class MainWindow(QMainWindow):
         opt_layout.addWidget(QLabel("Log every N:"))
         opt_layout.addWidget(self.spin_log)
         opt_layout.addWidget(self.cb_byteswap)
+        opt_layout.addWidget(self.cb_resync)
         opt_layout.addStretch(1)
         root.addWidget(opt_group)
 
@@ -486,7 +542,7 @@ class MainWindow(QMainWindow):
         file_layout = QHBoxLayout(file_group)
 
         self.cb_save = QCheckBox("Save to file")
-        self.cb_save.setChecked(True)
+        self.cb_save.setChecked(False)  # 기본값 유지(저장 OFF)
 
         self.out_path = QLineEdit()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -574,10 +630,6 @@ class MainWindow(QMainWindow):
                 "3) Device shows in Device Manager"
             )
 
-    def _on_device_type_changed(self, device_type: str):
-        # 펌웨어는 single pin 토글이므로 AOP여도 bit5/bit7 중 하나가 보통 맞습니다.
-        pass
-
     def _browse_file(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "Save ADC Data", self.out_path.text(), "Binary (*.bin);;All (*.*)"
@@ -588,7 +640,7 @@ class MainWindow(QMainWindow):
     def _get_host_intr_mask(self) -> int:
         idx = self.intr_bit_combo.currentIndex()
         masks = [0x10, 0x20, 0x80, 0xA0]
-        return masks[idx] if idx < len(masks) else 0x20
+        return masks[idx] if idx < len(masks) else 0xA0
 
     def _start_capture(self):
         if self.spi_combo.count() == 0:
@@ -609,13 +661,20 @@ class MainWindow(QMainWindow):
             preview_every=self.spin_preview.value(),
             log_every=self.spin_log.value(),
             byteswap32=self.cb_byteswap.isChecked(),
+            resync_on_start=self.cb_resync.isChecked(),
         )
 
-        self._log(f"Starting capture: {settings.device_type} mode")
-        self._log(f"Fixed Frame size: {FW_FRAME_SIZE} bytes ({CHUNKS_PER_FRAME} chunks)")
-        self._log(f"HOST_INTR mask: 0x{settings.host_intr_mask:02X} | poll {settings.poll_sleep_us}us")
-        self._log(f"SPI Clock: {settings.clock_hz/1e6:.1f} MHz | byteswap32={'ON' if settings.byteswap32 else 'OFF'}")
-        self._log(f"FlushEvery={settings.flush_every} PreviewEvery={settings.preview_every} LogEvery={settings.log_every}")
+        self._log("===== Capture Start =====")
+        self._log(f"Device Type     : {settings.device_type}")
+        self._log(f"SPI index       : {settings.spi_dev_index}")
+        self._log(f"GPIO index      : {settings.gpio_dev_index}{' (separate)' if settings.device_type=='AOP' and settings.gpio_dev_index!=settings.spi_dev_index else ''}")
+        self._log(f"SPI Clock       : {settings.clock_hz/1e6:.1f} MHz")
+        self._log(f"Frame Size      : {FW_FRAME_SIZE:,} bytes")
+        self._log(f"Chunks/Frame    : {CHUNKS_PER_FRAME}")
+        self._log(f"HOST_INTR mask  : 0x{settings.host_intr_mask:02X}  (ready when GPIO&mask==0)")
+        self._log(f"Byteswap32      : {'ON' if settings.byteswap32 else 'OFF'}")
+        self._log(f"Resync          : {'ON' if settings.resync_on_start else 'OFF'}")
+        self._log(f"Output          : {settings.out_path if settings.save_to_file else '(not saving)'}")
 
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -656,7 +715,6 @@ class MainWindow(QMainWindow):
             self.progress.setValue(current % 100)
 
     def _on_preview(self, data: bytes):
-        # 원하는 형태: 00 00 00 69 00 01 02 03 ...
         hex_str = " ".join(f"{b:02X}" for b in data)
         self._log(f"[PREVIEW] {hex_str}")
 
