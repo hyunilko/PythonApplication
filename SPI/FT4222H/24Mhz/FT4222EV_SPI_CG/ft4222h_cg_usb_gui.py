@@ -732,7 +732,7 @@ class MainWindow(QMainWindow):
         opt_layout = QHBoxLayout(opt_group)
 
         self.clock_combo = QComboBox()
-        self.clock_combo.addItems(["24000000", "15000000", "12000000", "6000000", "1000000"])
+        self.clock_combo.addItems(["30000000", "24000000", "15000000", "12000000", "6000000", "1000000"])
         self.clock_combo.setCurrentText("24000000")  # FT4222H max stable: 24MHz (30MHz unstable)
         self.clock_combo.setToolTip("FT4222H: max stable 24MHz\nFT4232H: 30MHz with 3-Phase Clock")
 

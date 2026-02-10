@@ -125,26 +125,69 @@ def port_enum(p: int) -> Port:
     raise ValueError("GPIO port must be 0..3")
 
 
-def pick_clock_div_for_target(dev_spi, target_hz: int) -> Clock:
+def set_sysclock_for_target(dev_spi, target_hz: int) -> tuple:
     """
-    FT4222: SCK = SysClock / DIV
-    - getClock()가 동작하면 sysclk 추정, 실패하면 60MHz 가정
-    - target 이하 중 가장 빠른 divider 선택
+    Set FT4222H system clock to best match target SPI frequency.
+    - 30MHz SPI: need 60MHz sysclock (60/2=30)
+    - 24MHz SPI: need 48MHz sysclock (48/2=24)
+    - 20MHz SPI: need 80MHz sysclock (80/4=20)
+    Returns (sysclock_hz, sysclock_name).
     """
-    sys_hz = 60_000_000
+    if not hasattr(ft4222, "SysClock") or not hasattr(dev_spi, "setClock"):
+        return (60_000_000, "60MHz (default)")
+
+    # Choose sysclock based on target SPI frequency
+    if target_hz >= 30_000_000:
+        sysclk_enum = ft4222.SysClock.CLK_60
+        sysclk_hz = 60_000_000
+        sysclk_name = "60MHz"
+    elif target_hz >= 24_000_000:
+        sysclk_enum = ft4222.SysClock.CLK_48
+        sysclk_hz = 48_000_000
+        sysclk_name = "48MHz"
+    elif target_hz >= 20_000_000:
+        sysclk_enum = ft4222.SysClock.CLK_80
+        sysclk_hz = 80_000_000
+        sysclk_name = "80MHz"
+    else:
+        sysclk_enum = ft4222.SysClock.CLK_60
+        sysclk_hz = 60_000_000
+        sysclk_name = "60MHz"
+
     try:
-        clk_enum = dev_spi.getClock()
-        if hasattr(ft4222, "SysClock"):
-            if clk_enum == ft4222.SysClock.CLK_24:
-                sys_hz = 24_000_000
-            elif clk_enum == ft4222.SysClock.CLK_48:
-                sys_hz = 48_000_000
-            elif clk_enum == ft4222.SysClock.CLK_60:
-                sys_hz = 60_000_000
-            elif clk_enum == ft4222.SysClock.CLK_80:
-                sys_hz = 80_000_000
+        dev_spi.setClock(sysclk_enum)
+        print(f"[OK] setClock -> {sysclk_name} (for {target_hz/1e6:.1f}MHz SPI)")
+    except Exception as e:
+        print(f"[WARN] setClock({sysclk_name}) failed: {e}")
+
+    # Verify actual sysclock
+    try:
+        clk = dev_spi.getClock()
+        if clk == ft4222.SysClock.CLK_24:
+            sysclk_hz = 24_000_000
+            sysclk_name = "24MHz"
+        elif clk == ft4222.SysClock.CLK_48:
+            sysclk_hz = 48_000_000
+            sysclk_name = "48MHz"
+        elif clk == ft4222.SysClock.CLK_60:
+            sysclk_hz = 60_000_000
+            sysclk_name = "60MHz"
+        elif clk == ft4222.SysClock.CLK_80:
+            sysclk_hz = 80_000_000
+            sysclk_name = "80MHz"
     except Exception:
         pass
+
+    return (sysclk_hz, sysclk_name)
+
+
+def pick_clock_div_for_target(dev_spi, target_hz: int) -> tuple:
+    """
+    FT4222: SCK = SysClock / DIV
+    - Sets sysclock first, then picks best divider
+    - Returns (Clock enum, actual SPI frequency, sysclock Hz)
+    """
+    sys_hz, sys_name = set_sysclock_for_target(dev_spi, target_hz)
 
     table = [
         (Clock.DIV_2,   sys_hz // 2),
@@ -158,12 +201,15 @@ def pick_clock_div_for_target(dev_spi, target_hz: int) -> Clock:
         (Clock.DIV_512, sys_hz // 512),
     ]
 
-    best = table[-1][0]
+    best_div = table[-1][0]
+    actual_hz = table[-1][1]
     for div_enum, hz in table:
         if hz <= target_hz:
-            best = div_enum
+            best_div = div_enum
+            actual_hz = hz
             break
-    return best
+
+    return (best_div, actual_hz, sys_hz)
 
 
 def gpio_init_input_all(dev_gpio):
@@ -380,8 +426,13 @@ def capture(args):
 
         # SPI init
         cpol, cpha = spi_mode_to_cpol_cpha(args.spi_mode)
-        clk_div = pick_clock_div_for_target(dev_spi, args.spi_clock_hz)
+        clk_div, actual_spi_hz, sys_hz = pick_clock_div_for_target(dev_spi, args.spi_clock_hz)
         spi_master_init_compat(dev_spi, clk_div, cpol, cpha, ss_enum(args.ss))
+
+        if actual_spi_hz != args.spi_clock_hz:
+            print(f"[INFO] SPI clock: requested {args.spi_clock_hz/1e6:.1f}MHz -> actual {actual_spi_hz/1e6:.1f}MHz (sysclk={sys_hz/1e6:.0f}MHz)")
+        else:
+            print(f"[INFO] SPI clock: {actual_spi_hz/1e6:.1f}MHz (sysclk={sys_hz/1e6:.0f}MHz)")
 
         # Summary
         print("\n===== FT4222H Capture (CNFMODE0) =====")
