@@ -1,0 +1,3 @@
+# pip install -r requirements.txt
+# FT4222H (UMFT4222EV) Python bindings
+ft4222

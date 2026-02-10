@@ -1,0 +1,4 @@
+# pip install -r requirements.txt
+PyQt6
+ftd2xx
+ft4222

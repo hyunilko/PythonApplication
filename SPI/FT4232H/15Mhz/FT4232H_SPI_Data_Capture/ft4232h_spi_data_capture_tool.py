@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-spi_data_capture_tool.py (Improved for AWRL6844 + FTDI(MPSSE) RX-only capture)
+file: ft4232h_spi_data_capture_tool.py (Improved for AWRL6844 + FTDI(MPSSE) RX-only capture)
 
 - Works with firmware pattern:
   - adcDataPerFrame = 131072 bytes (default)
@@ -371,18 +371,18 @@ def main():
     out_path = input_with_default("Output .bin file path", default_out, str)
 
     capture_frames(
-        device_type=device_type,
-        spi_index=spi_index,
-        gpio_index=gpio_index,
-        clock_hz=clock_hz,
-        frames=frames,
-        frame_period_ms=frame_period_ms,
-        frame_size=frame_size,
-        host_intr_mask=host_intr_mask,
-        out_path=out_path,
-        byteswap32=byteswap32,
-        preview_every=preview_every,
-        log_every=log_every,
+        device_type     = device_type,
+        spi_index       = spi_index,
+        gpio_index      = gpio_index,
+        clock_hz        = clock_hz,
+        frames          = frames,
+        frame_period_ms = frame_period_ms,
+        frame_size      = frame_size,
+        host_intr_mask  = host_intr_mask,
+        out_path        = out_path,
+        byteswap32      = byteswap32,
+        preview_every   = preview_every,
+        log_every       = log_every,
     )
 
     input("\nPress Enter to exit...")

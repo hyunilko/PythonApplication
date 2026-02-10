@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-awrl_ftdi_spi_gui.py  (FW header = u32_to_be(cnt))
+file: ft4232h_cg_usb_gui.py  (FW header = u32_to_be(cnt))
 
 Firmware:
 - adcDataPerFrame = 131072 bytes

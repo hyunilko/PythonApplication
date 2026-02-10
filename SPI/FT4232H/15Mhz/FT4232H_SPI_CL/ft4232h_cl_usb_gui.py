@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ft4232h_cl_usb_gui.py
+file: ft4232h_cl_usb_gui.py
 AWRL6844 SPI Data Capture Tool (FT4232H / ftd2xx / MPSSE)
 
 Firmware (main_full_mss.c) behavior assumed:
