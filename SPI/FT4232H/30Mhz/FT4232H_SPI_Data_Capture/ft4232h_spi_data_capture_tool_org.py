@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+  #!/usr/bin/env python3
 """
 file: ft4232h_spi_data_capture_tool.py  (CLI / 1 frame per file)
 
@@ -35,7 +35,6 @@ import time
 import glob
 import struct
 import array
-import argparse
 from datetime import datetime
 
 try:
@@ -59,45 +58,6 @@ FTDI_CMD_READ_BYTES = b"\x20"           # Clock Data Bytes In on +ve edge MSB fi
 FTDI_CMD_READ_GPIO  = b"\x81"           # Read Data bits LowByte
 
 FTDI_MAX_CHUNK = 65536  # MAXSPISIZEFTDI
-
-# ======================== Default Configuration ========================
-# Device
-DEFAULT_SPI_INDEX = 0
-DEFAULT_GPIO_INDEX = 1
-DEFAULT_HOST_INTR_MASK = 0xA0
-
-# SPI Clock
-DEFAULT_SPI_CLOCK_HZ = 30_000_000
-DEFAULT_USE_3PHASE_CLK = True
-
-# Frame size parameters
-DEFAULT_ADC_SAMPLES = 256
-DEFAULT_CHIRPS_PER_BURST = 64
-DEFAULT_BURSTS_PER_FRAME = 1
-DEFAULT_RX_ANTENNAS = 4
-
-# Capture options
-DEFAULT_NUM_FRAMES = 20
-DEFAULT_BYTESWAP32 = True
-DEFAULT_RESYNC_ON_START = True
-
-# Timing
-DEFAULT_POLL_SLEEP_US = 0
-DEFAULT_SETTLE_US = 0
-
-# Output
-DEFAULT_OUT_DIR = r"Z:\Texas_Instruments\AWRL6844\Python_App\capture_out"
-DEFAULT_CLEAN_OLD_BINS = True
-DEFAULT_PREVIEW_EVERY = 1
-DEFAULT_LOG_EVERY = 1
-
-# Period tracking
-DEFAULT_PERIOD_MS = 64.0
-DEFAULT_PERIOD_TOL_MS = 15.0
-DEFAULT_WARMUP_FRAMES = 3
-
-# Fast mode
-DEFAULT_FAST_MODE = True
 
 # Test-pattern heuristic (byteswap32 ON 기준)
 # i=65536인 위치부터 (i-4)&0xFF => 0xFC,0xFD,0xFE,0xFF
@@ -161,7 +121,7 @@ def set_clk(handle, hz_req: int) -> int:
     return actual_hz
 
 
-def set_device(handle, clk_speed: int = 24_000_000, latency_timer: int = 1,
+def set_device(handle, clk_speed: int = 15_000_000, latency_timer: int = 1,
                rw_timeout_ms: int = 5000, use_3phase_clk: bool = False) -> int:
     """Initialize FTDI device for MPSSE SPI + GPIO reads. Returns actual clock."""
     handle.resetDevice()
@@ -330,12 +290,6 @@ def capture_1frame_1file(
     preview_every: int,
     log_every: int,
     clean_old_bins: bool,
-    # period tracking
-    period_ms: float = 64.0,
-    period_tol_ms: float = 15.0,
-    warmup_frames: int = 3,
-    # fast mode
-    fast_mode: bool = True,
 ):
     frame_size = chirps_per_burst * bursts_per_frame * adc_samples * rx_antennas * 2
     chunks_per_frame = (frame_size + FTDI_MAX_CHUNK - 1) // FTDI_MAX_CHUNK
@@ -359,9 +313,6 @@ def capture_1frame_1file(
         print(f"Frame size calc : chirps({chirps_per_burst}) * bursts({bursts_per_frame}) * adc({adc_samples}) * rx({rx_antennas}) * 2")
         print(f"Frame Size      : {frame_size:,} bytes")
         print(f"Chunks/Frame    : {chunks_per_frame} (max {FTDI_MAX_CHUNK} bytes per chunk)")
-        print(f"Expected period : {period_ms:.1f} ms (tol ±{period_tol_ms:.1f} ms)")
-        print(f"Warmup frames   : {warmup_frames}")
-        print(f"Fast mode       : {'ON (memory buffer)' if fast_mode else 'OFF'}")
         print("")
 
         # output folder
@@ -449,14 +400,6 @@ def capture_1frame_1file(
         frame_count = 0
         total_bytes = 0
         t0 = time.perf_counter()
-        prev_frame_t = None
-        period_fail = 0
-        seq_fail = 0
-        expected_cnt = None
-        warmup_done = False
-
-        # Fast mode: buffer frames in memory
-        frame_buffer = [] if fast_mode else None
 
         target = num_frames if num_frames > 0 else float("inf")
 
@@ -464,31 +407,16 @@ def capture_1frame_1file(
             remain = frame_size
             chunks_to_use = pending_chunks
             pending_chunks = []
-            frame_data = bytearray()
 
-            # ---- chunk0 ----
-            if chunks_to_use:
-                chunk0_raw = chunks_to_use.pop(0)
-                frame_t = time.perf_counter()
-            else:
-                while True:
-                    try:
-                        wait_intr_low(dev_gpio, host_intr_mask, timeout_s=0.25,
-                                      poll_sleep_us=poll_sleep_us, settle_us=settle_us)
-                        break
-                    except TimeoutError:
-                        continue
+            # open per-frame file
+            out_file = os.path.join(out_folder, f"frame_{frame_count:04d}.bin")
+            first64 = None
+            frame_no_hex = "????????"
 
-                frame_t = time.perf_counter()
-                chunk0_raw = spi_read_exact(dev_spi, min(FTDI_MAX_CHUNK, remain))
-
-            frame_data.extend(chunk0_raw)
-            remain -= len(chunk0_raw)
-
-            # ---- remaining chunks ----
-            while remain > 0:
+            with open(out_file, "wb") as f:
+                # ---- chunk0 ----
                 if chunks_to_use:
-                    chunk_raw = chunks_to_use.pop(0)
+                    chunk0 = chunks_to_use.pop(0)
                 else:
                     while True:
                         try:
@@ -498,156 +426,58 @@ def capture_1frame_1file(
                         except TimeoutError:
                             continue
 
-                    chunk_raw = spi_read_exact(dev_spi, min(FTDI_MAX_CHUNK, remain))
+                    chunk0 = spi_read_exact(dev_spi, min(FTDI_MAX_CHUNK, remain))
+                    if byteswap32:
+                        chunk0 = byteswap32_fast(chunk0)
 
-                frame_data.extend(chunk_raw)
-                remain -= len(chunk_raw)
+                # store preview/frameno
+                first64 = chunk0[:64]
+                if len(chunk0) >= 4:
+                    frame_no_u32 = int.from_bytes(chunk0[0:4], "big")  # after byteswap32, BE is valid
+                    frame_no_hex = f"{frame_no_u32:08X}"
+
+                f.write(chunk0)
+                remain -= len(chunk0)
+
+                # ---- remaining chunks ----
+                while remain > 0:
+                    if chunks_to_use:
+                        chunk = chunks_to_use.pop(0)
+                    else:
+                        while True:
+                            try:
+                                wait_intr_low(dev_gpio, host_intr_mask, timeout_s=0.25,
+                                              poll_sleep_us=poll_sleep_us, settle_us=settle_us)
+                                break
+                            except TimeoutError:
+                                continue
+
+                        chunk = spi_read_exact(dev_spi, min(FTDI_MAX_CHUNK, remain))
+                        if byteswap32:
+                            chunk = byteswap32_fast(chunk)
+
+                    f.write(chunk)
+                    remain -= len(chunk)
 
             frame_count += 1
             total_bytes += frame_size
 
-            # === FAST MODE: buffer only, minimal processing ===
-            if fast_mode:
-                frame_buffer.append(bytes(frame_data))
-
-                # Preview in fast mode
-                if preview_every > 0 and (frame_count % preview_every) == 0:
-                    # Apply byteswap for preview if needed
-                    if byteswap32:
-                        preview_data = byteswap32_fast(bytes(frame_data[:32]))
-                    else:
-                        preview_data = bytes(frame_data[:32])
-                    print("[FAST][PREVIEW] " + " ".join(f"{b:02X}" for b in preview_data))
-
-                # Progress every log_every frames
-                if log_every > 0 and (frame_count % log_every) == 0:
-                    elapsed = time.perf_counter() - t0
-                    fps = frame_count / elapsed if elapsed > 0 else 0
-                    print(f"[FAST] Frame {frame_count}: {fps:.1f} fps")
-                continue
-
-            # === NORMAL MODE: process and save immediately ===
-            if byteswap32:
-                frame_data = bytearray(byteswap32_fast(bytes(frame_data)))
-
-            # Extract frame number
-            frame_no_u32 = None
-            if len(frame_data) >= 4:
-                frame_no_u32 = int.from_bytes(frame_data[0:4], "big")
-                frame_no_hex = f"{frame_no_u32:08X}"
-            else:
-                frame_no_hex = "????????"
-
-            # Save to file
-            out_file = os.path.join(out_folder, f"frame_{frame_count-1:04d}.bin")
-            with open(out_file, "wb") as f:
-                f.write(frame_data)
-
-            # --- warmup / stats ---
-            is_warmup = (frame_count <= warmup_frames)
-
-            if not warmup_done and frame_count > warmup_frames:
-                warmup_done = True
-                period_fail = 0
-                seq_fail = 0
-                expected_cnt = None
-                prev_frame_t = None
-
-            # sequence check
-            if expected_cnt is None and frame_no_u32 is not None:
-                expected_cnt = frame_no_u32
-            elif expected_cnt is not None and frame_no_u32 is not None:
-                if frame_no_u32 != expected_cnt and not is_warmup:
-                    seq_fail += 1
-            if expected_cnt is not None:
-                expected_cnt = (expected_cnt + 1) & 0xFFFFFFFF
-
-            # period check
-            if prev_frame_t is not None:
-                period = (frame_t - prev_frame_t) * 1000.0
-                if abs(period - period_ms) > period_tol_ms and not is_warmup:
-                    period_fail += 1
-            else:
-                period = 0.0
-            prev_frame_t = frame_t
-
             # preview
-            if preview_every > 0 and (frame_count % preview_every) == 0:
-                first32 = frame_data[:32]
-                print("[PREVIEW] " + " ".join(f"{b:02X}" for b in first32))
+            if preview_every > 0 and (frame_count % preview_every) == 0 and first64 is not None:
+                print("[PREVIEW] " + " ".join(f"{b:02X}" for b in first64))
 
             # log
             if log_every > 0 and (frame_count % log_every) == 0:
                 elapsed = time.perf_counter() - t0
-                fps = frame_count / elapsed if elapsed > 0 else 0.0
-                period_str = f"{period:.1f}ms" if period > 0 else "-"
-                warmup_tag = "[WARMUP] " if is_warmup else ""
-                print(
-                    f"{warmup_tag}Frame {frame_count}: FrameNo={frame_no_hex} | "
-                    f"period={period_str} | period_fail={period_fail} seq_fail={seq_fail} | "
-                    f"fps={fps:.2f}"
-                )
+                mbps = (total_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0.0
+                print(f"Frame {frame_count}: {frame_size} bytes | Total {total_bytes/1024:.1f} KB | {mbps:.2f} MB/s | FrameNo={frame_no_hex}")
 
-        capture_elapsed = time.perf_counter() - t0
-        capture_fps = frame_count / capture_elapsed if capture_elapsed > 0 else 0.0
-
-        # === FAST MODE: Post-capture processing ===
-        if fast_mode and frame_buffer:
-            print(f"\n\n[FAST] Capture done. Processing {len(frame_buffer)} frames...")
-
-            # Process and save
-            save_start = time.perf_counter()
-            for i, raw_frame in enumerate(frame_buffer):
-                # Byteswap
-                if byteswap32:
-                    frame_data = byteswap32_fast(raw_frame)
-                else:
-                    frame_data = raw_frame
-
-                # Save
-                out_file = os.path.join(out_folder, f"frame_{i:04d}.bin")
-                with open(out_file, "wb") as f:
-                    f.write(frame_data)
-
-                if (i + 1) % 20 == 0:
-                    print(f"\r[FAST] Saved {i+1}/{len(frame_buffer)} files...", end="", flush=True)
-
-            save_elapsed = time.perf_counter() - save_start
-            print(f"\n[FAST] Files saved in {save_elapsed:.2f}s")
-
-            # Verify sequence
-            print("[FAST] Verifying sequence...")
-            seq_errors = 0
-            prev_cnt = None
-            for i, raw_frame in enumerate(frame_buffer):
-                if byteswap32:
-                    frame_data = byteswap32_fast(raw_frame)
-                else:
-                    frame_data = raw_frame
-
-                if len(frame_data) >= 4:
-                    cnt = int.from_bytes(frame_data[0:4], "big")
-                    if prev_cnt is not None and cnt != (prev_cnt + 1) & 0xFFFFFFFF:
-                        seq_errors += 1
-                        if seq_errors <= 5:
-                            print(f"  Frame {i}: expected {prev_cnt+1:08X}, got {cnt:08X}")
-                    prev_cnt = cnt
-
-            if seq_errors == 0:
-                print("[FAST] Sequence OK!")
-            elif seq_errors > 5:
-                print(f"  ... and {seq_errors - 5} more errors")
-
-            seq_fail = seq_errors
-
-        fps = frame_count / capture_elapsed if capture_elapsed > 0 else 0.0
-        mbps = (total_bytes / (1024 * 1024)) / capture_elapsed if capture_elapsed > 0 else 0.0
+        elapsed = time.perf_counter() - t0
+        mbps = (total_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0.0
         print("\n===== Capture Done =====")
         print(f"Frames captured : {frame_count}")
         print(f"Total bytes     : {total_bytes:,}")
-        print(f"Capture speed   : {mbps:.2f} MB/s")
-        print(f"Capture fps     : {fps:.2f}")
-        print(f"seq_fail        : {seq_fail}")
+        print(f"Avg speed       : {mbps:.2f} MB/s")
         print(f"Saved to        : {out_folder}")
 
     finally:
@@ -663,129 +493,77 @@ def capture_1frame_1file(
             pass
 
 
-# ======================== Argparse ========================
-
-def build_argparser():
-    p = argparse.ArgumentParser(
-        description="FT4232H SPI Data Capture Tool (optimized for 64ms frame period)"
-    )
-
-    # Device selection
-    p.add_argument("--list-devices", action="store_true", help="List FTDI devices and exit")
-    p.add_argument("--spi-index", type=int, default=DEFAULT_SPI_INDEX,
-                   help=f"SPI device index (default: {DEFAULT_SPI_INDEX})")
-    p.add_argument("--gpio-index", type=int, default=DEFAULT_GPIO_INDEX,
-                   help=f"GPIO device index (default: {DEFAULT_GPIO_INDEX})")
-    p.add_argument("--host-intr-mask", type=lambda x: int(x, 0), default=DEFAULT_HOST_INTR_MASK,
-                   help=f"HOST_INTR mask hex (default: 0x{DEFAULT_HOST_INTR_MASK:02X})")
-
-    # SPI clock
-    p.add_argument("--spi-clock-hz", type=int, default=DEFAULT_SPI_CLOCK_HZ,
-                   help=f"SPI clock Hz (default: {DEFAULT_SPI_CLOCK_HZ // 1_000_000}MHz)")
-    p.add_argument("--3phase-clk", dest="use_3phase_clk", action="store_true", default=DEFAULT_USE_3PHASE_CLK,
-                   help=f"Enable 3-phase clocking (default: {'ON' if DEFAULT_USE_3PHASE_CLK else 'OFF'})")
-    p.add_argument("--no-3phase-clk", dest="use_3phase_clk", action="store_false",
-                   help="Disable 3-phase clocking")
-
-    # Frame size parameters
-    p.add_argument("--adc-samples", type=int, default=DEFAULT_ADC_SAMPLES,
-                   help=f"ADC samples (default: {DEFAULT_ADC_SAMPLES})")
-    p.add_argument("--chirps", type=int, default=DEFAULT_CHIRPS_PER_BURST,
-                   help=f"Chirps per burst (default: {DEFAULT_CHIRPS_PER_BURST})")
-    p.add_argument("--bursts", type=int, default=DEFAULT_BURSTS_PER_FRAME,
-                   help=f"Bursts per frame (default: {DEFAULT_BURSTS_PER_FRAME})")
-    p.add_argument("--rx-antennas", type=int, default=DEFAULT_RX_ANTENNAS,
-                   help=f"RX antennas (default: {DEFAULT_RX_ANTENNAS})")
-
-    # Capture options
-    p.add_argument("--frames", type=int, default=DEFAULT_NUM_FRAMES,
-                   help=f"Number of frames (0=infinite, default: {DEFAULT_NUM_FRAMES})")
-    p.add_argument("--byteswap32", action="store_true", default=DEFAULT_BYTESWAP32,
-                   help=f"Apply byteswap32 (default: {'ON' if DEFAULT_BYTESWAP32 else 'OFF'})")
-    p.add_argument("--no-byteswap32", dest="byteswap32", action="store_false",
-                   help="Disable byteswap32")
-    p.add_argument("--resync", action="store_true", default=DEFAULT_RESYNC_ON_START,
-                   help=f"Resync on start (default: {'ON' if DEFAULT_RESYNC_ON_START else 'OFF'})")
-    p.add_argument("--no-resync", dest="resync", action="store_false",
-                   help="Disable resync on start")
-
-    # Timing
-    p.add_argument("--poll-us", type=int, default=DEFAULT_POLL_SLEEP_US,
-                   help=f"GPIO poll sleep us (default: {DEFAULT_POLL_SLEEP_US})")
-    p.add_argument("--settle-us", type=int, default=DEFAULT_SETTLE_US,
-                   help=f"Settle time after LOW detect us (default: {DEFAULT_SETTLE_US})")
-
-    # Output
-    p.add_argument("--out-dir", default=DEFAULT_OUT_DIR,
-                   help=f"Output directory (default: {DEFAULT_OUT_DIR})")
-    p.add_argument("--clean", action="store_true", default=DEFAULT_CLEAN_OLD_BINS,
-                   help=f"Remove old .bin files (default: {'ON' if DEFAULT_CLEAN_OLD_BINS else 'OFF'})")
-    p.add_argument("--no-clean", dest="clean", action="store_false",
-                   help="Keep old .bin files")
-    p.add_argument("--preview-every", type=int, default=DEFAULT_PREVIEW_EVERY,
-                   help=f"Preview every N frames (default: {DEFAULT_PREVIEW_EVERY})")
-    p.add_argument("--log-every", type=int, default=DEFAULT_LOG_EVERY,
-                   help=f"Log every N frames (default: {DEFAULT_LOG_EVERY})")
-
-    # Period tracking
-    p.add_argument("--period-ms", type=float, default=DEFAULT_PERIOD_MS,
-                   help=f"Expected frame period ms (default: {DEFAULT_PERIOD_MS})")
-    p.add_argument("--period-tol-ms", type=float, default=DEFAULT_PERIOD_TOL_MS,
-                   help=f"Period tolerance ms (default: {DEFAULT_PERIOD_TOL_MS})")
-    p.add_argument("--warmup-frames", type=int, default=DEFAULT_WARMUP_FRAMES,
-                   help=f"Warmup frames to skip for stats (default: {DEFAULT_WARMUP_FRAMES})")
-
-    # Fast mode
-    p.add_argument("--fast-mode", action="store_true", default=DEFAULT_FAST_MODE,
-                   help=f"Fast mode: buffer frames in memory, write after capture (default: {'ON' if DEFAULT_FAST_MODE else 'OFF'})")
-    p.add_argument("--no-fast-mode", dest="fast_mode", action="store_false",
-                   help="Disable fast mode (write each frame immediately)")
-
-    return p
-
-
 # ======================== Main ========================
 
 def main():
-    args = build_argparser().parse_args()
+    print("========== FT4232H SPI Data Capture Tool (CLI / 1 frame per file) ==========\n")
 
-    if args.list_devices:
-        devs = list_ftdi_devices()
-        if not devs:
-            print("No FTDI devices found.")
-        else:
-            print("Detected FTDI devices:")
-            for i, desc, sn in devs:
-                print(f"  [{i}] {desc} (SN:{sn})")
-        return
+    devs = list_ftdi_devices()
+    if not devs:
+        print("No FTDI devices found. Check D2XX driver / cable connection.")
+        sys.exit(1)
+
+    print("Detected FTDI devices:")
+    for i, desc, sn in devs:
+        print(f"  [{i}] {desc} (SN:{sn})")
+    print("")
+
+    spi_index = input_with_default("SPI device index", 0, int)
+    gpio_index = input_with_default("GPIO device index (same if shared)", 1, int)
+
+    host_intr_mask_str = input_with_default("HOST_INTR mask hex (e.g. 0xA0)", "0xA0", str)
+    try:
+        host_intr_mask = int(host_intr_mask_str, 16)
+    except Exception:
+        host_intr_mask = 0xA0
+
+    # clock
+    clock_req_hz = input_with_default("SPI clock request (Hz) (e.g. 24000000/30000000/15000000)", 30000000, int)
+    use_3phase_clk = input_yesno("Enable 3-phase clocking? (recommended ON for high speed stability)", True)
+
+    # radar config (frame size)
+    print("\n--- Frame size parameters (must match firmware) ---")
+    adc_samples      = input_with_default("ADC samples", 256, int)
+    chirps_per_burst = input_with_default("Chirps per burst", 64, int)
+    bursts_per_frame = input_with_default("Bursts per frame", 1, int)
+    rx_antennas      = input_with_default("RX antennas", 4, int)
+
+    # capture options
+    num_frames   = input_with_default("Number of frames (0=infinite)", 100, int)
+    byteswap32   = input_yesno("Apply byteswap32? (recommended ON)", True)
+    resync       = input_yesno("Resync on start? (recommended ON)", True)
+    poll_us      = input_with_default("GPIO poll sleep (us)", 10, int)
+    settle_us    = input_with_default("Settle time after LOW detect (us) (try 100~500 for 24MHz+)", 100, int)
+
+    preview_every = input_with_default("Preview every N frames (0=off)", 1, int)
+    log_every     = input_with_default("Log every N frames", 1, int)
+
+    default_out_folder = os.path.join(os.getcwd(), f"capture_out_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    out_folder = input_with_default("Output folder (1 file per frame)", default_out_folder, str)
+    clean_old = input_yesno("Remove old .bin files in output folder?", True)
 
     capture_1frame_1file(
-        spi_index=args.spi_index,
-        gpio_index=args.gpio_index,
-        clock_req_hz=args.spi_clock_hz,
-        host_intr_mask=args.host_intr_mask,
-        num_frames=args.frames,
-        out_folder=args.out_dir,
-        byteswap32=args.byteswap32,
-        resync_on_start=args.resync,
-        poll_sleep_us=args.poll_us,
-        settle_us=args.settle_us,
-        use_3phase_clk=args.use_3phase_clk,
-        adc_samples=args.adc_samples,
-        chirps_per_burst=args.chirps,
-        bursts_per_frame=args.bursts,
-        rx_antennas=args.rx_antennas,
-        preview_every=args.preview_every,
-        log_every=args.log_every,
-        clean_old_bins=args.clean,
-        # Period tracking
-        period_ms=args.period_ms,
-        period_tol_ms=args.period_tol_ms,
-        warmup_frames=args.warmup_frames,
-        # Fast mode
-        fast_mode=args.fast_mode,
+        spi_index=spi_index,
+        gpio_index=gpio_index,
+        clock_req_hz=clock_req_hz,
+        host_intr_mask=host_intr_mask,
+        num_frames=num_frames,
+        out_folder=out_folder,
+        byteswap32=byteswap32,
+        resync_on_start=resync,
+        poll_sleep_us=poll_us,
+        settle_us=settle_us,
+        use_3phase_clk=use_3phase_clk,
+        adc_samples=adc_samples,
+        chirps_per_burst=chirps_per_burst,
+        bursts_per_frame=bursts_per_frame,
+        rx_antennas=rx_antennas,
+        preview_every=preview_every,
+        log_every=log_every,
+        clean_old_bins=clean_old,
     )
 
+    input("\nPress Enter to exit...")
 
 if __name__ == "__main__":
     main()
