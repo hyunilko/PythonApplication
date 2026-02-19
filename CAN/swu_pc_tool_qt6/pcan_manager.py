@@ -1,14 +1,14 @@
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-  # pcan_manager.py (Class-based)
-  # - PCANBasic 초기화/해제
-  # - 64B FD 프레임 생성 및 전송 (재시도 + 인터프레임 갭)
-  # - 공개 API:
-  #     PCANManager.open(channel, bitrate_fd, is_std=True, use_brs=True, ifg_us=1500)
-  #     PCANManager.close()
-  #     PCANManager.send_bytes(can_id: int, data: bytes)  # ≤64B 자동 패딩
-  #     (alias) send_frame, write
+# pcan_manager.py (Class-based)
+# - PCANBasic 초기화/해제
+# - 64B FD 프레임 생성 및 전송 (재시도 + 인터프레임 갭)
+# - 공개 API:
+#     PCANManager.open(channel, bitrate_fd, is_std=True, use_brs=True, ifg_us=1500)
+#     PCANManager.close()
+#     PCANManager.send_bytes(can_id: int, data: bytes)  # ≤64B 자동 패딩
+#     (alias) send_frame, write
 
 from __future__ import annotations
 from typing import Optional
@@ -27,74 +27,74 @@ from swu_constants import (
 )
 from swu_exceptions import PCANError, PCANInitError, PCANWriteError, PCANReadError
 
-  # --------- helpers ---------
-def _as_int_flag(x): 
+# --------- helpers ---------
+def _as_int_flag(x):
     """PCAN 상수( Int / IntEnum / bytes / bytearray / ctypes.c_ubyte )를 int로 정규화."""
-    if isinstance(x, (bytes, bytearray)): 
+    if isinstance(x, (bytes, bytearray)):
         return x[0]
     v = getattr(x, "value", None)
-    if v is not None: 
+    if v is not None:
         return _as_int_flag(v)
     return int(x)
 
 
-def _make_fd_msg(can_id: int, data_64b: bytes, is_std: bool = True, use_brs: bool = True) -> TPCANMsgFD: 
+def _make_fd_msg(can_id: int, data_64b: bytes, is_std: bool = True, use_brs: bool = True) -> TPCANMsgFD:
     assert len(data_64b) == 64, "data_64b must be exactly 64 bytes"
-           msg            = TPCANMsgFD()
-           msg.ID         = can_id
-           msg.DLC        = 15                                       # FD DLC for 64 bytes
+    msg = TPCANMsgFD()
+    msg.ID = can_id
+    msg.DLC = 15  # FD DLC for 64 bytes
 
-    flags  = _as_int_flag(PCAN_MESSAGE_FD)
+    flags = _as_int_flag(PCAN_MESSAGE_FD)
     flags |= _as_int_flag(PCAN_MESSAGE_STANDARD) if is_std else _as_int_flag(PCAN_MESSAGE_EXTENDED)
-    if use_brs: 
+    if use_brs:
         flags |= _as_int_flag(PCAN_MESSAGE_BRS)
 
-    try: 
+    try:
         msg.MSGTYPE = TPCANMessageType(flags)
-    except Exception: 
+    except Exception:
         msg.MSGTYPE = flags
 
-    try: 
+    try:
         msg.DATA = (c_ubyte * 64)(*data_64b)
-    except Exception: 
-          # 일부 환경에서 위 라인이 실패할 경우 대비
-        for i in range(64): 
+    except Exception:
+        # 일부 환경에서 위 라인이 실패할 경우 대비
+        for i in range(64):
             msg.DATA[i] = data_64b[i]
     return msg
 
 
-def _write_fd_blocking(pcan: PCANBasic, channel, msg: TPCANMsgFD, ifg_us: int = DEFAULT_IFG_US, max_retry: int = PCAN_WRITE_MAX_RETRY) -> None: 
+def _write_fd_blocking(pcan: PCANBasic, channel, msg: TPCANMsgFD, ifg_us: int = DEFAULT_IFG_US, max_retry: int = PCAN_WRITE_MAX_RETRY) -> None:
     """PCAN_WriteFD with 재시도(XMTFULL) + 인터프레임 갭 보장."""
-    for _ in range(max_retry): 
-           res  = pcan.WriteFD(channel, msg)
+    for _ in range(max_retry):
+        res = pcan.WriteFD(channel, msg)
         if res == PCAN_ERROR_OK:
-            if ifg_us > 0: 
+            if ifg_us > 0:
                 time.sleep(ifg_us / 1_000_000.0)
             return
-        if res in (PCAN_ERROR_XMTFULL, PCAN_ERROR_QXMTFULL): 
+        if res in (PCAN_ERROR_XMTFULL, PCAN_ERROR_QXMTFULL):
             time.sleep(0.001)  # 1ms backoff
             continue
         raise PCANWriteError(msg.ID, int(res))
     raise PCANError("PCAN WriteFD: transmit queue full (retries exceeded)")
 
 
-class PCANManager: 
+class PCANManager:
     """PCAN FD 송신 매니저"""
 
-    def __init__(self): 
-        self._pcan    : Optional[PCANBasic] = None
-                        self._channel               = None
-                        self._is_open               = False
-                        self._is_std                = True
-                        self._use_brs               = True
-                        self._ifg_us                = DEFAULT_IFG_US     # 인터프레임 갭 기본값
+    def __init__(self):
+        self._pcan: Optional[PCANBasic] = None
+        self._channel = None
+        self._is_open = False
+        self._is_std = True
+        self._use_brs = True
+        self._ifg_us = DEFAULT_IFG_US  # 인터프레임 갭 기본값
         self._rx_thread: Optional[threading.Thread] = None
-                        self._rx_stop               = threading.Event()
-                        self._on_frame              = None               # type: Optional[callable]
-        self._rx_q     : "Queue[bytes]"             = Queue()            # (옵션) pull 방식도 가능하도록 준비
+        self._rx_stop = threading.Event()
+        self._on_frame = None                # type: Optional[callable]
+        self._rx_q: "Queue[bytes]" = Queue() # (옵션) pull 방식도 가능하도록 준비
 
     @staticmethod
-    def _resolve_channel(name_or_val): 
+    def _resolve_channel(name_or_val):
         """'PCAN_USBBUS1' 같은 문자열을 상수로 매핑. 숫자나 상수면 그대로 사용."""
         mapping = {
             "PCAN_USBBUS1": PCAN_USBBUS1,
@@ -102,131 +102,131 @@ class PCANManager:
             "PCAN_USBBUS3": PCAN_USBBUS3,
             "PCAN_USBBUS4": PCAN_USBBUS4,
         }
-        if isinstance(name_or_val, str): 
+        if isinstance(name_or_val, str):
             return mapping.get(name_or_val, PCAN_USBBUS1)
         return name_or_val
 
     def open(self,
-             channel    = "PCAN_USBBUS1",
-             bitrate_fd = DEFAULT_BITRATE_FD,
+             channel="PCAN_USBBUS1",
+             bitrate_fd=DEFAULT_BITRATE_FD,
              *,
-             is_std : bool = True,
+             is_std: bool = True,
              use_brs: bool = True,
-             ifg_us : int  = DEFAULT_IFG_US):
+             ifg_us: int = DEFAULT_IFG_US):
         """PCAN FD 링크 초기화."""
-        if self._is_open: 
+        if self._is_open:
             return
 
-        self._pcan    = PCANBasic()
+        self._pcan = PCANBasic()
         self._channel = self._resolve_channel(channel)
-        self._is_std  = is_std
+        self._is_std = is_std
         self._use_brs = use_brs
-        self._ifg_us  = int(ifg_us)
+        self._ifg_us = int(ifg_us)
 
-           sts  = self._pcan.InitializeFD(self._channel, TPCANBitrateFD(str(bitrate_fd).encode("utf-8")))
+        sts = self._pcan.InitializeFD(self._channel, TPCANBitrateFD(str(bitrate_fd).encode("utf-8")))
         if sts != PCAN_ERROR_OK:
             raise PCANInitError(str(channel), int(sts))
 
         self._is_open = True
 
-      # 호환 이름
+    # 호환 이름
     connect = open
 
-    def close(self)                        : 
-    if  not self._is_open or not self._pcan: 
+    def close(self):
+        if not self._is_open or not self._pcan:
             self._is_open = False
             return
-        try: 
+        try:
             self._pcan.Uninitialize(self._channel)
-        finally: 
+        finally:
             self._is_open = False
-            self._pcan    = None
+            self._pcan = None
             self._channel = None
 
-      # 호환 이름
+    # 호환 이름
     disconnect = close
 
-    def send_bytes(self, can_id: int, data: bytes): 
+    def send_bytes(self, can_id: int, data: bytes):
         """바이트 페이로드 전송(≤64B 자동 패딩)."""
-        if not self._is_open or not self._pcan: 
+        if not self._is_open or not self._pcan:
             raise PCANError("PCANManager가 열려 있지 않습니다. open() 먼저 호출하세요.")
 
-        if not isinstance(data, (bytes, bytearray)): 
+        if not isinstance(data, (bytes, bytearray)):
             raise TypeError("data must be bytes-like")
 
-        if len(data) > CANFD_MAX_PAYLOAD: 
+        if len(data) > CANFD_MAX_PAYLOAD:
             raise ValueError(f"payload length {len(data)} > {CANFD_MAX_PAYLOAD} (분할 전송 필요)")
 
         payload = (bytes(data) + b"\x00" * (CANFD_MAX_PAYLOAD - len(data)))[:CANFD_MAX_PAYLOAD]
-        msg     = _make_fd_msg(can_id, payload, is_std=self._is_std, use_brs=self._use_brs)
+        msg = _make_fd_msg(can_id, payload, is_std=self._is_std, use_brs=self._use_brs)
         _write_fd_blocking(self._pcan, self._channel, msg, ifg_us=self._ifg_us)
 
-    def send_frame(self, can_id: int, data: bytes): 
+    def send_frame(self, can_id: int, data: bytes):
         self.send_bytes(can_id, data)
 
-    def write(self, can_id: int, data: bytes): 
+    def write(self, can_id: int, data: bytes):
         self.send_bytes(can_id, data)
 
-    def _read_once(self) -> Optional[TPCANMsgFD]: 
+    def _read_once(self) -> Optional[TPCANMsgFD]:
         """단발 ReadFD. 수신 없으면 None."""
-        if not self._is_open or not self._pcan: 
+        if not self._is_open or not self._pcan:
             return None
-          # ReadFD는 튜플 (result, msg, timestamp) 를 반환
-        res, msg , ts = self._pcan.ReadFD(self._channel)
-        if  res  == PCAN_ERROR_QRCVEMPTY:
+        # ReadFD는 튜플 (result, msg, timestamp) 를 반환
+        res, msg, ts = self._pcan.ReadFD(self._channel)
+        if res == PCAN_ERROR_QRCVEMPTY:
             return None
         if res != PCAN_ERROR_OK:
             raise PCANReadError(int(res))
         return msg
 
     @staticmethod
-    def _payload_from_msgfd(msg: TPCANMsgFD) -> bytes: 
+    def _payload_from_msgfd(msg: TPCANMsgFD) -> bytes:
         """64바이트 데이터 영역을 bytes로 추출."""
-        try: 
+        try:
             return bytes(bytearray(msg.DATA)[:CANFD_MAX_PAYLOAD])
-        except Exception: 
-              # 일부 바인딩에서는 msg.DATA 가 ctypes 배열
+        except Exception:
+            # 일부 바인딩에서는 msg.DATA 가 ctypes 배열
             return bytes((msg.DATA[i] for i in range(CANFD_MAX_PAYLOAD)))
 
-    def start_rx(self, on_frame: callable = None): 
+    def start_rx(self, on_frame: callable = None):
         """
         수신 스레드 시작.
         on_frame(payload_bytes: bytes, can_id: int) 콜백을 호출합니다.
         (payload는 64B 원본; 필요 시 GUI에서 ASCII 디코딩/trim)
         """
-          # 이미 동작 중이면 그대로 둠
-        if getattr(self, "_rx_thread", None) and self._rx_thread.is_alive(): 
+        # 이미 동작 중이면 그대로 둠
+        if getattr(self, "_rx_thread", None) and self._rx_thread.is_alive():
             return
 
         self._on_frame = on_frame
         self._rx_stop.clear()
 
-        def   _loop()                   : 
-        while not self._rx_stop.is_set(): 
-              try                       : 
+        def _loop():
+            while not self._rx_stop.is_set():
+                try:
                     msg = self._read_once()  # None 또는 TPCANMsgFD
-                    if msg is None: 
+                    if msg is None:
                         time.sleep(PCAN_READ_TIMEOUT_MS / 1000.0)
                         continue
 
                     payload = self._payload_from_msgfd(msg)  # bytes (최대 64B)
                     can_id  = int(getattr(msg, "ID", 0))
 
-                      # 내부 큐에도 넣어두고
+                    # 내부 큐에도 넣어두고
                     self._rx_q.put((payload, can_id))
 
-                      # 콜백 있으면 호출
-                    if self._on_frame: 
-                       try           : 
+                    # 콜백 있으면 호출
+                    if self._on_frame:
+                        try:
                             self._on_frame(payload, can_id)
-                        except Exception: 
-                              # 콜백 오류는 수신 루프까지 죽이지 않음
+                        except Exception:
+                            # 콜백 오류는 수신 루프까지 죽이지 않음
                             pass
-                except Exception: 
-                      # 안정성: 과한 예외 전파 억제
+                except Exception:
+                    # 안정성: 과한 예외 전파 억제
                     time.sleep(0.01)
 
-          # import threading
+        # import threading
         self._rx_thread = threading.Thread(target=_loop, name="pcan-rx", daemon=True)
         self._rx_thread.start()
 
@@ -248,10 +248,10 @@ class PCANManager:
         SWU PC Tool에서는 ACK(0x50) 프레임만 필요하므로,
         msg_id(하위 8bit)가 0x50인 메시지만 반환합니다.
 
-        Args:
-            timeout_s: 최대 대기 시간(초)
+        Args     : 
+        timeout_s: 최대 대기 시간(초)
 
-        Returns: 
+        Returns:
             payload bytes (CAN frame data) 또는 timeout 시 None
         """
 

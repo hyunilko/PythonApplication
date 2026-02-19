@@ -6,7 +6,7 @@ can_isotp_sender.py
 PCAN + ISO-TP 기반 CLI 커맨드 송수신기 (Class 형태)
  - python-can 의 PCAN 인터페이스로 버스 오픈
  - can-isotp(pylessard)의 NotifierBasedCanStack 사용(세그멘테이션/재조립)
- - Application Layer: [Msg ID | Payload...] 프레이밍 적용
+ - Application Layer: [Len(4B, LE) | Msg ID | Payload...] 프레이밍 적용
    * CLI Command용 Msg ID = 250(0xFA)
  - 파일 저장 포맷(옵션 --save):
    <Msg ID(10진수)>\n<payload(UTF-8 또는 HEX)>\n
@@ -32,15 +32,43 @@ log = logging.getLogger("can_cli_isotp")
 APP_MSG_ID_CLI = 0xFA  # 250
 
 def pack_app(msg_id: int, payload: bytes) -> bytes:
+    """APP_PDU = [Len(4B, LE)] + [MsgID(1B)] + Payload"""
     if payload is None:
         payload = b""
-    return bytes([msg_id & 0xFF]) + payload
+    length = len(payload) & 0xFFFFFFFF
+    len_le = bytes((
+        length & 0xFF,
+        (length >> 8) & 0xFF,
+        (length >> 16) & 0xFF,
+        (length >> 24) & 0xFF,
+    ))
+    return len_le + bytes([msg_id & 0xFF]) + payload
 
 def try_unpack_app(pdu: bytes) -> Tuple[int, bytes]:
-    """pdu가 [MsgID][Payload...] 형식이면 (msg_id, payload) 반환, 아니면 ( -1, 원문 )."""
+    """
+    APP_PDU = [Len(4B, LE)] + [MsgID(1B)] + Payload
+    legacy fallback: [MsgID][Payload...]
+    """
     if not pdu:
         return (-1, b"")
-    return (pdu[0], pdu[1:])
+
+    if len(pdu) >= 5:
+        plen = (
+            int(pdu[0])
+            | (int(pdu[1]) << 8)
+            | (int(pdu[2]) << 16)
+            | (int(pdu[3]) << 24)
+        )
+        msg_id = int(pdu[4]) & 0xFF
+        raw = pdu[5:]
+        if plen < 0:
+            plen = 0
+        if plen <= len(raw):
+            return (msg_id, raw[:plen])
+        return (msg_id, raw)
+
+    # Legacy format compatibility
+    return (int(pdu[0]) & 0xFF, pdu[1:])
 
 def payload_to_text_or_hex(payload: bytes) -> str:
     try:
@@ -110,7 +138,7 @@ def _to_payload_bytes(s: str, eol: str) -> bytes:
 class CanIsoTpSender:
     """
     PCAN 버스 + ISO-TP 스택을 관리하고, 문자열/바이트 전송 및 응답 수신을 제공.
-    Application Layer: [Msg ID | Payload...] 적용 (CLI Msg ID=0xFA)
+    Application Layer: [Len(4B, LE) | Msg ID | Payload...] 적용 (CLI Msg ID=0xFA)
     """
 
     txid: int
@@ -218,6 +246,37 @@ class CanIsoTpSender:
         except Exception as e:
             log.warning("save failed: %s", e)
 
+    # NOTE: translated to English.
+    def send_app_pdu(
+        self,
+        msg_id: int,
+        payload: bytes,
+        *,
+        timeout_s: Optional[float] = None,
+        blocking: Optional[bool] = None
+    ) -> None:
+        if self.stack is None:
+            raise RuntimeError("Stack not started")
+        if payload is None:
+            payload = b""
+
+        app = pack_app(int(msg_id) & 0xFF, payload)
+        timeout = self.timeout_s if timeout_s is None else float(timeout_s)
+        blocking_send = self.params.get("blocking_send", False) if blocking is None else bool(blocking)
+
+        if blocking_send:
+            self.stack.send(app, timeout=timeout)
+            log.debug("TX(APP %dB): %s", len(app), _hexdump(app))
+        else:
+            self.stack.send(app)
+            log.debug("TX(APP %dB): %s", len(app), _hexdump(app))
+            t0 = time.monotonic()
+            while self.stack.transmitting() and (time.monotonic() - t0 < timeout):
+                time.sleep(0.002)
+
+        # TX record stores logical payload only.
+        self._save_record(int(msg_id) & 0xFF, payload)
+
     # ---- 연결/해제 ----
     def connect(self, ifg_us: Optional[int] = None, **ignored_kwargs):
         if ifg_us is not None:
@@ -270,29 +329,7 @@ class CanIsoTpSender:
 
     # ---- 송신/수신 ----
     def send_bytes(self, payload: bytes, *, timeout_s: Optional[float] = None, blocking: Optional[bool] = None) -> None:
-        if self.stack is None:
-            raise RuntimeError("Stack not started")
-        if payload is None:
-            payload = b""
-
-        # Application Layer 프레이밍
-        app = pack_app(APP_MSG_ID_CLI, payload)
-
-        timeout = self.timeout_s if timeout_s is None else float(timeout_s)
-        blocking_send = self.params.get("blocking_send", False) if blocking is None else bool(blocking)
-
-        if blocking_send:
-            self.stack.send(app, timeout=timeout)
-            log.debug("TX(APP %dB): %s", len(app), _hexdump(app))
-        else:
-            self.stack.send(app)
-            log.debug("TX(APP %dB): %s", len(app), _hexdump(app))
-            t0 = time.monotonic()
-            while self.stack.transmitting() and (time.monotonic() - t0 < timeout):
-                time.sleep(0.002)
-
-        # TX 기록 (요청 포맷)
-        self._save_record(APP_MSG_ID_CLI, payload)
+        self.send_app_pdu(APP_MSG_ID_CLI, payload, timeout_s=timeout_s, blocking=blocking)
 
     def read_response(self, *, timeout_s: Optional[float] = None) -> Optional[Tuple[int, bytes]]:
         """응답을 Application Layer로 언패킹하여 (msg_id, payload) 반환."""

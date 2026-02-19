@@ -3,7 +3,7 @@
 """
 can_isotp_receiver.py
 
-ISO-TP 완성 패킷 수신기 (Application Layer: [Msg ID | Payload...])
+ISO-TP 완성 패킷 수신기 (Application Layer: [Len(4B, LE) | Msg ID | Payload...])
  - python-can + (가능시) python-can-isotp 스택으로 FF/CF 조립
  - 스택 조립 불능 시에도 수동 조립기로 FF/CF를 복구 (12-bit/32-bit FF 모두 지원)
  - 수신 패킷을 (payload, msg_id) 형태로 콜백/큐로 전달
@@ -97,9 +97,27 @@ def _resolve_bus(rx_mgr) -> Optional[can.BusABC]:
 
 # ===== Application Layer =====
 def unpack_app(pdu: bytes) -> Tuple[int, bytes]:
+    """APP_PDU=[Len(4B LE)][MsgID][Payload], fallback=[MsgID][Payload]."""
     if not pdu:
         return (-1, b"")
-    return (pdu[0], pdu[1:])
+
+    if len(pdu) >= 5:
+        plen = (
+            int(pdu[0])
+            | (int(pdu[1]) << 8)
+            | (int(pdu[2]) << 16)
+            | (int(pdu[3]) << 24)
+        )
+        msg_id = int(pdu[4]) & 0xFF
+        raw = pdu[5:]
+        if plen < 0:
+            plen = 0
+        if plen <= len(raw):
+            return (msg_id, raw[:plen])
+        return (msg_id, raw)
+
+    # Legacy format compatibility
+    return (int(pdu[0]) & 0xFF, pdu[1:])
 
 def payload_to_text_or_hex(payload: bytes) -> str:
     return _hex_compact(payload)
@@ -377,8 +395,7 @@ class _IsoTpProbeAssembler(can.Listener):
                     pay = data[2:2 + sf_len]
                 if not pay:
                     return
-                msg_id = pay[0]
-                body = pay[1:]
+                msg_id, body = unpack_app(pay)
                 self._emit(msg_id, body)
                 self._reset()
                 return
@@ -432,8 +449,7 @@ class _IsoTpProbeAssembler(can.Listener):
                 if len(self._buf) >= self._need_len:
                     pdu = bytes(self._buf[:self._need_len])
                     if pdu:
-                        msg_id = pdu[0]
-                        body = pdu[1:]
+                        msg_id, body = unpack_app(pdu)
                         self._emit(msg_id, body)
                     self._reset()
                 return
@@ -795,7 +811,7 @@ if __name__ == "__main__":
         )
         sender.connect(ifg_us=int(os.environ.get("PCAN_IFG_US", "3000")))
         rx_mgr = sender._require_mgr()
-        print("[INFO] Bus 확보: sender._require_mgr() 사용")
+        print("[INFO] Bus source: sender._require_mgr()")
     except Exception as e:
         print(f"[WARN] CanIsoTpSender 경로 실패: {e}")
 
@@ -868,3 +884,4 @@ if __name__ == "__main__":
                 sender.disconnect()
         except Exception:
             pass
+

@@ -1,5 +1,5 @@
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 swu_pc_tool.py
 
@@ -615,7 +615,7 @@ def main() -> int:
 
     # 파라미터 검증
     params = validate_and_resolve_params(args)
-    if params is None:
+    if params is None: 
         return 2
 
     # Dry-run 모드

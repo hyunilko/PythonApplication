@@ -1,0 +1,144 @@
+  /**
+ * These arguments were used when this file was generated. They will be automatically applied on subsequent loads
+ * via the GUI or CLI. Run CLI with '--help' for additional information on how to override these arguments.
+ * @cliArgs --device "XWRL684X" --part "Default" --package "FCCSP" --context "r5fss0-0" --product "MMWAVE-L-SDK-6@06.01.00"
+ * @v2CliArgs --device "IWRL6844" --package "FCCSP (ANC)" --context "r5fss0-0" --product "MMWAVE-L-SDK-6@06.01.00"
+ * @versions {"tool":"1.26.0+4407"}
+ */
+
+/**
+ * Import the modules used in this configuration.
+ */
+const control_example  = scripting.addModule("/control/control_example/control_example", {}, false);
+const control_example1 = control_example.addInstance();
+const adcbuf           = scripting.addModule("/drivers/adcbuf/adcbuf", {}, false);
+const adcbuf1          = adcbuf.addInstance();
+const edma             = scripting.addModule("/drivers/edma/edma", {}, false);
+const edma1            = edma.addInstance();
+const gpio             = scripting.addModule("/drivers/gpio/gpio", {}, false);
+const gpio1            = gpio.addInstance();
+const gpio2            = gpio.addInstance();
+const mcspi            = scripting.addModule("/drivers/mcspi/mcspi", {}, false);
+const mcspi1           = mcspi.addInstance();
+const uart             = scripting.addModule("/drivers/uart/uart", {}, false);
+const uart1            = uart.addInstance();
+const clock            = scripting.addModule("/kernel/dpl/clock");
+const debug_log        = scripting.addModule("/kernel/dpl/debug_log");
+const mpu_armv7        = scripting.addModule("/kernel/dpl/mpu_armv7", {}, false);
+const mpu_armv71       = mpu_armv7.addInstance();
+const mpu_armv72       = mpu_armv7.addInstance();
+const mpu_armv73       = mpu_armv7.addInstance();
+const mpu_armv74       = mpu_armv7.addInstance();
+const mpu_armv75       = mpu_armv7.addInstance();
+const mpu_armv76       = mpu_armv7.addInstance();
+const mpu_armv77       = mpu_armv7.addInstance();
+const mpu_armv78       = mpu_armv7.addInstance();
+const mpu_armv79       = mpu_armv7.addInstance();
+const mpu_armv710      = mpu_armv7.addInstance();
+
+/**
+ * Write custom configuration values to the imported modules.
+ */
+control_example1.$name        = "CONFIG_CONTROL_EXAMPLE0";
+control_example1.cwModeTimeus = "5000000";
+control_example1.spiEnable    = true;
+
+adcbuf1.$name = "CONFIG_ADCBUF0";
+
+gpio1.pinDir               = "OUTPUT";
+gpio1.$name                = "SPI_HOST_INTR";
+gpio1.GPIO.gpioPin.$assign = "PAD_AV";
+
+gpio2.pinDir               = "OUTPUT";
+gpio2.$name                = "CONFIG_FRAME_LED";
+gpio2.GPIO.gpioPin.$assign = "PAD_AW";
+
+mcspi1.$name                    = "CONFIG_MCSPI0";
+mcspi1.dmaEnable                = false;
+mcspi1.advanced                 = true;
+mcspi1.mcspiChannel[0].$name    = "CONFIG_MCSPI_CH0";
+mcspi1.mcspiChannel[0].advanced = true;
+mcspi1.mcspiChannel[0].bitRate  = 20000000;
+
+uart1.$name           = "CONFIG_UART_CONSOLE";
+uart1.intrEnable      = "DISABLE";
+uart1.UART.$assign    = "UARTB";
+uart1.UART.RX.$assign = "PAD_AP";
+uart1.UART.TX.$assign = "PAD_AO";
+
+uart1.edmaConfig                   = edma1;
+edma1.$name                        = "CONFIG_EDMA1";
+edma1.edmaRmDmaCh[0].$name         = "CONFIG_EDMA_RM0";
+edma1.edmaRmQdmaCh[0].$name        = "CONFIG_EDMA_RM1";
+edma1.edmaRmTcc[0].$name           = "CONFIG_EDMA_RM2";
+edma1.edmaRmParam[0].$name         = "CONFIG_EDMA_RM3";
+edma1.edmaRmReservedDmaCh[0].$name = "CONFIG_EDMA_RM4";
+
+mpu_armv71.$name             = "CONFIG_MPU_REGION0";
+mpu_armv71.attributes        = "NonCached";
+mpu_armv71.accessPermissions = "Supervisor BLOCK, User BLOCK";
+mpu_armv71.allowExecute      = false;
+
+mpu_armv72.$name      = "CONFIG_MPU_REGION1";
+mpu_armv72.size       = 20;
+mpu_armv72.attributes = "NonCached";
+
+mpu_armv73.$name      = "CONFIG_MPU_REGION2";
+mpu_armv73.baseAddr   = 0x8000000;
+mpu_armv73.size       = 19;
+mpu_armv73.attributes = "NonCached";
+
+mpu_armv74.$name        = "CONFIG_MPU_REGION3";
+mpu_armv74.baseAddr     = 0x21000000;
+mpu_armv74.size         = 24;
+mpu_armv74.attributes   = "NonCached";
+mpu_armv74.allowExecute = false;
+
+mpu_armv75.$name             = "CONFIG_MPU_REGION4";
+mpu_armv75.baseAddr          = 0x21000000;
+mpu_armv75.size              = 17;
+mpu_armv75.accessPermissions = "Supervisor RD, User RD";
+mpu_armv75.attributes        = "NonCached";
+
+mpu_armv76.$name        = "CONFIG_MPU_REGION5";
+mpu_armv76.baseAddr     = 0x50000000;
+mpu_armv76.size         = 28;
+mpu_armv76.allowExecute = false;
+mpu_armv76.attributes   = "Non-Shareable+Device";
+
+mpu_armv77.$name        = "CONFIG_MPU_REGION6";
+mpu_armv77.baseAddr     = 0x70000000;
+mpu_armv77.size         = 25;
+mpu_armv77.attributes   = "Device";
+mpu_armv77.allowExecute = false;
+
+mpu_armv78.$name        = "CONFIG_MPU_REGION7";
+mpu_armv78.baseAddr     = 0x78000000;
+mpu_armv78.size         = 8;
+mpu_armv78.allowExecute = false;
+mpu_armv78.attributes   = "Non-Shareable+Device";
+
+mpu_armv79.$name        = "CONFIG_MPU_REGION8";
+mpu_armv79.baseAddr     = 0x88000000;
+mpu_armv79.size         = 20;
+mpu_armv79.attributes   = "NonCached";
+mpu_armv79.allowExecute = false;
+
+mpu_armv710.$name        = "CONFIG_MPU_REGION9";
+mpu_armv710.size         = 14;
+mpu_armv710.attributes   = "NonCached";
+mpu_armv710.allowExecute = false;
+mpu_armv710.baseAddr     = 0x83000000;
+
+/**
+ * Pinmux solution for unlocked pins/peripherals. This ensures that minor changes to the automatic solver in a future
+ * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
+ * re-solve from scratch.
+ */
+gpio1.GPIO.$suggestSolution                 = "GPIO";
+gpio2.GPIO.$suggestSolution                 = "GPIO";
+mcspi1.MCSPI.$suggestSolution               = "MCSPIA";
+mcspi1.MCSPI.CLK.$suggestSolution           = "PAD_AG";
+mcspi1.MCSPI.MOSI.$suggestSolution          = "PAD_AI";
+mcspi1.MCSPI.MISO.$suggestSolution          = "PAD_AJ";
+mcspi1.mcspiChannel[0].CSn.$suggestSolution = "PAD_AH";

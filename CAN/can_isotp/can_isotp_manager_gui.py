@@ -51,7 +51,7 @@ except Exception as e:
     _rx_err = e
 
 
-# ================= 유틸: FD 타이밍/필터 파서 =================
+# NOTE: translated to English.
 def _parse_filter_ids(text: str) -> Optional[Set[int]]:
     s = (text or "").strip()
     if not s:
@@ -993,8 +993,8 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(ev)
 
-    def _on_tx_line_sent(self, s: str):
-        try:
+    def _on_tx_line_sent(self, s: str): 
+        try                           : 
             b = s.encode("utf-8", "strict")
         except Exception:
             b = s.encode("utf-8", "replace")

@@ -1,14 +1,14 @@
-  # swu_customtp.py
-  # Minimal CustomTP framer for SWU DATA blocks.
-  #
-  # Uses the same on-wire frame structure as the attached can_custom_tp_sender.py:
-  # - 64-byte CAN FD payload
-  # - first 2 bytes = header
-  #   * bit7 of HDR1: LAST flag
-  #   * bits5..0 of HDR1 + HDR2: 14-bit sequence number
-  # - remaining 62 bytes: payload chunk (padded with 0x00 on last frame)
-  #
-  # This module only frames (splits) a raw PDU into 64B chunks.
+# swu_customtp.py
+# Minimal CustomTP framer for SWU DATA blocks.
+#
+# Uses the same on-wire frame structure as the attached can_custom_tp_sender.py:
+# - 64-byte CAN FD payload
+# - first 2 bytes = header
+#   * bit7 of HDR1: LAST flag
+#   * bits5..0 of HDR1 + HDR2: 14-bit sequence number
+# - remaining 62 bytes: payload chunk (padded with 0x00 on last frame)
+#
+# This module only frames (splits) a raw PDU into 64B chunks.
 
 from __future__ import annotations
 from dataclasses import dataclass

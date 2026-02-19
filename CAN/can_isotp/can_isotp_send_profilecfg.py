@@ -3,7 +3,7 @@
 """
 can_isotp_send_profilecfg.py
 - One-click friendly: all inputs have sensible defaults so you can run directly in PyCharm.
-- Sends an Application PDU: [ MsgID | Payload ]
+- Sends an Application PDU: [ Len(4B, LE) | MsgID(1B) | Payload ]
   * MsgID defaults to 0x24
   * Payload is MMWave_ProfileComCfg (packed LE, 11 bytes)
 
@@ -14,7 +14,6 @@ Requirements:
 from __future__ import annotations
 import argparse
 import logging
-import time
 import sys
 import os
 
@@ -69,15 +68,7 @@ def build_args():
     return p
 
 def send_pdu(sender: "can_isotp_sender.CanIsoTpSender", msg_id: int, payload: bytes, timeout: float):
-    if sender.stack is None:
-        raise RuntimeError("sender.connect() must be called first")
-    app = bytes([msg_id & 0xFF]) + (payload or b"")
-    # Non-blocking send with a small wait loop (matches sender.send_bytes behaviour)
-    sender.stack.send(app)
-    log.debug("TX[APP %dB]: %s", len(app), hexdump(app))
-    t0 = time.monotonic()
-    while sender.stack.transmitting() and (time.monotonic() - t0) < timeout:
-        time.sleep(0.002)
+    sender.send_app_pdu(msg_id=int(msg_id) & 0xFF, payload=(payload or b""), timeout_s=timeout)
 
 def main() -> int:
     args = build_args().parse_args()
@@ -125,7 +116,7 @@ def main() -> int:
         log.info("ISO-TP ready: txid=0x%X rxid=0x%X (%s-bit, %s)",
                  args.txid, args.rxid, "29" if args.extended else "11", "FD" if args.fd else "Classic")
 
-        # Send PDU [MsgID | Payload]
+        # Send PDU [Len(4B,LE) | MsgID | Payload]
         send_pdu(sender, args.msg_id, payload, args.timeout)
 
         # Optional: wait for a response framed the same way

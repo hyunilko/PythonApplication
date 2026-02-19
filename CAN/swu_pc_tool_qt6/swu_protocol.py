@@ -1,25 +1,25 @@
-  # swu_protocol.py
-  # SWU (Software Update) protocol encoder/decoder for AWRL6844 SBL over CAN FD.
-  #
-  # Spec highlights :
-  # - CAN Standard ID (11-bit): CAN_ID = (DeviceID<<8) | MSG_ID, DeviceID=0 => CAN_ID == MSG_ID
-  #   MSG_ID: 0x32 (Control), 0x33 (Data), 0x50 (ACK)
-  # - CommandID/AckID: 3 bytes, Big Endian (MSB first)
-  # - SWU_REQUEST(Control, single CAN frame) now includes ModelID and SWVersion so APP can decide:
-  #     * If ModelID mismatch  -> do NOT trigger, reply ACK_SWU_REQUEST FAIL (MODEL_MISMATCH)
-  #     * If SWVersion match   -> do NOT trigger, reply ACK_SWU_REQUEST FAIL (VERSION_MATCH)
-  #     * If different version -> set SWU flag in flash, warm reset into SBL, reply ACK_SWU_REQUEST SUCCESS
-  # - DATA is sent over IsoTP/CustomTP and processed after reassembly.
-  #   DATA Upper Message format (after TP reassembly):
-  #     CommandID(3B, BE=0x105301)
-  #     BlockIdx(2B, BE, 1-base)
-  #     ExpectedCRC32(4B, BE)   // streaming CRC over "ImagePayload only"
-  #     PayloadLength(4B, BE)   // valid image payload bytes (exclude TP padding)
-  #     ImagePayload(PayloadLength bytes)
-  #     Padding(optional)       // ignored by CRC and length checks
-  #
-  # Note: Multi-byte field endianness can be configured via ByteOrder for compatibility,
-  #       but the SWU spec uses Big Endian for SWU payload fields.
+# swu_protocol.py
+# SWU (Software Update) protocol encoder/decoder for AWRL6844 SBL over CAN FD.
+#
+# Spec highlights :
+# - CAN Standard ID (11-bit): CAN_ID = (DeviceID<<8) | MSG_ID, DeviceID=0 => CAN_ID == MSG_ID
+#   MSG_ID: 0x32 (Control), 0x33 (Data), 0x50 (ACK)
+# - CommandID/AckID: 3 bytes, Big Endian (MSB first)
+# - SWU_REQUEST(Control, single CAN frame) now includes ModelID and SWVersion so APP can decide:
+#     * If ModelID mismatch  -> do NOT trigger, reply ACK_SWU_REQUEST FAIL (MODEL_MISMATCH)
+#     * If SWVersion match   -> do NOT trigger, reply ACK_SWU_REQUEST FAIL (VERSION_MATCH)
+#     * If different version -> set SWU flag in flash, warm reset into SBL, reply ACK_SWU_REQUEST SUCCESS
+# - DATA is sent over IsoTP/CustomTP and processed after reassembly.
+#   DATA Upper Message format (after TP reassembly):
+#     CommandID(3B, BE=0x105301)
+#     BlockIdx(2B, BE, 1-base)
+#     ExpectedCRC32(4B, BE)   // streaming CRC over "ImagePayload only"
+#     PayloadLength(4B, BE)   // valid image payload bytes (exclude TP padding)
+#     ImagePayload(PayloadLength bytes)
+#     Padding(optional)       // ignored by CRC and length checks
+#
+# Note: Multi-byte field endianness can be configured via ByteOrder for compatibility,
+#       but the SWU spec uses Big Endian for SWU payload fields.
 
 from __future__ import annotations
 from dataclasses import dataclass
