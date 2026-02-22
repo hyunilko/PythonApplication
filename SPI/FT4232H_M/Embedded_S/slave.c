@@ -2,17 +2,7 @@
  *   @file  main_full_mss.c
  *
  *   @brief
- *      Unit Test code for the mmWave
- *
- *      SPI Master Mode Configuration:
- *      - AWRL6844: SPI Master (generates clock, sends data)
- *      - FT4222H:  SPI Slave  (receives data)
- *
- *      Important: SysConfig must be configured for SPI Master mode!
- *      In SysConfig (*.syscfg):
- *        MCSPI -> Mode = "Master"
- *        MCSPI -> Chip Select = "CS0" (or as needed)
- *        MCSPI -> Clock Frequency = 20000000 (20MHz recommended)
+ *      Unit Test code for the mmWave 
  *
  *  \par
  *  NOTE:
@@ -115,7 +105,7 @@ StackType_t gMmWaveTaskStack[MMWAVE_TASK_SIZE] __attribute__((aligned(32)));
  * Important Note: Size of this buffer has to be updated based on chirp configuration
  * This should be minimum of (Num of Chirps in a frame) * (Number of ADC Samples per chirp) * (2 Bytes) * (Num of Rx Antennas)
  */
-#define MAX_ADC_BUF_SIZE                   (256*1024U)
+#define MAX_ADC_BUF_SIZE                   (300*1024U)
 
 
 /**************************************************************************
@@ -224,21 +214,10 @@ static inline void u32_to_be(uint32_t value, uint8_t *buffer) {
 /**
  *  @b Description
  *  @n
- *      SPI Master Mode - Stream ADC data to host via SPI interface
+ *      The function is used stream the adc data to host via SPI interface 
  *
- *      Operation (AWRL6844 = SPI Master):
- *      1. Wait for frame end semaphore
- *      2. Prepare data buffer
- *      3. For each 64KB chunk:
- *         a. Set HOST_INTR LOW  (signal: "data transfer starting")
- *         b. MCSPI_transfer()   (Master generates clock and sends data)
- *         c. Set HOST_INTR HIGH (signal: "chunk transfer complete")
- *      4. Repeat for next frame
- *
- *      FT4222H (SPI Slave) should:
- *      - Wait for HOST_INTR LOW
- *      - Read data from SPI RX buffer (clock provided by AWRL6844)
- *      - Wait for HOST_INTR HIGH (chunk complete)
+ *  @param[in]  format
+ *      Character pointer for taking string input
  *
  *  @retval
  *      Not applicable
@@ -255,32 +234,35 @@ void adcDataLoggingViaSPI()
     uint32_t i;
     uint8_t* byte_ptr;
 
-    MmWave_serialWrite("SPI Master Mode: Starting ADC data streaming\r\n");
-    MmWave_serialWrite("Frame size: %u bytes, Chunk size: %u bytes\r\n", adcDataPerFrame, MAXSPISIZEFTDI);
-
-    /***************************ADC Streaming Via SPI (Master Mode)***********************************************************/
-    /* AWRL6844 is SPI Master - generates clock and actively sends data to FT4222H (Slave) */
+    /***************************ADC Streaming Via SPI***********************************************************/
+    /* This code Section allows the streaming of raw ADC data over SPI interface every frame during the frame idle time. */
 
     while(true)
     {
-        /* Wait for frame end interrupt */
         SemaphoreP_pend(&mmwaveADCDataLoggingSemHandle, SystemP_WAIT_FOREVER);
 
         byte_ptr = (uint8_t*)adcbuffer2;
-        /* 0 ~ 3 byte = frame number (Big Endian) */
+        /* 0 ~ 3 byte = frame number  */
         u32_to_be(cnt, byte_ptr);
 
-        /* Fill rest with incrementing sequence for test pattern */
+        /* Fill rest with incrementing sequence */
         for(i = 4; i < adcDataPerFrame; i++)
         {
             byte_ptr[i] = (uint8_t)((i - 4) & 0xFF);
         }
 
+        /* Print first 16 bytes for comparison */
+        // MmWave_serialWrite("Frame %u, Size %u bytes\r\n", cnt, adcDataPerFrame);
+        // MmWave_serialWrite("Frame %u : %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n", cnt,
+        //     byte_ptr[0], byte_ptr[1], byte_ptr[2], byte_ptr[3],
+        //     byte_ptr[4], byte_ptr[5], byte_ptr[6], byte_ptr[7],
+        //     byte_ptr[8], byte_ptr[9], byte_ptr[10], byte_ptr[11],
+        //     byte_ptr[12], byte_ptr[13], byte_ptr[14], byte_ptr[15]);
+
         totalSizeToTfr = adcDataPerFrame;
         tempSize = adcDataPerFrame;
         count = 0;
 
-        /* Transfer data in chunks (max 64KB per chunk for FT4222H compatibility) */
         while(totalSizeToTfr > 0)
         {
             if(totalSizeToTfr > MAXSPISIZEFTDI)
@@ -292,36 +274,22 @@ void adcDataLoggingViaSPI()
                 tempSize = totalSizeToTfr;
             }
 
-            /* Configure SPI transaction */
             MCSPI_Transaction_init(&spiTransaction);
             spiTransaction.channel  = gConfigMcspi0ChCfg[0].chNum;
-            spiTransaction.dataSize = 32;           /* 32-bit data width */
-            spiTransaction.csDisable = TRUE;        /* Disable CS after transfer */
-            spiTransaction.count    = tempSize / 4; /* Number of 32-bit words */
+            spiTransaction.dataSize = 32;
+            spiTransaction.csDisable = TRUE;
+            spiTransaction.count    = tempSize / 4;
             spiTransaction.txBuf    = (void *)(&adc_data[(MAXSPISIZEFTDI/4) * count]);
-            spiTransaction.rxBuf    = NULL;         /* TX only, no RX */
+            spiTransaction.rxBuf    = NULL;
             spiTransaction.args     = NULL;
 
-            /*
-             * HOST_INTR signaling for SPI Master mode:
-             * LOW  = Transfer starting (FT4222H should prepare to receive)
-             * HIGH = Transfer complete (FT4222H can process received data)
-             */
             GPIO_pinWriteLow(gSPIHostIntrBaseAddrLed, gSPIHostIntrPinNumLed);
-
-            ClockP_usleep(100); //50us sleep
-
-            /* Master mode: MCSPI_transfer generates clock and sends data immediately */
             transferOK = MCSPI_transfer(gMcspiHandle[CONFIG_MCSPI0], &spiTransaction);
-
-            GPIO_pinWriteHigh(gSPIHostIntrBaseAddrLed, gSPIHostIntrPinNumLed);
-
-            ClockP_usleep(1000); //50us sleep
-
             if(transferOK != 0)
             {
-                MmWave_serialWrite("SPI Master Transfer Failed at chunk %u (err=%d)\r\n", count, transferOK);
+                MmWave_serialWrite("SPI Transfer Failed at chunk %u\r\n", count);
             }
+            GPIO_pinWriteHigh(gSPIHostIntrBaseAddrLed, gSPIHostIntrPinNumLed);
 
             totalSizeToTfr = totalSizeToTfr - tempSize;
             count++;
@@ -395,11 +363,11 @@ void Mmwave_populateDefaultCfg ()
     mmwcfg.rxEnbl = (RX0A_EN_SEL | RX1A_EN_SEL | RX2A_EN_SEL | RX3A_EN_SEL); /* Enable all 4 Rx */
 
     /* Populate the frame configuration: */
-    mmwcfg.frameCfg.numOfChirpsInBurst = 16; // 64 -> 16
+    mmwcfg.frameCfg.numOfChirpsInBurst = 64;
     mmwcfg.frameCfg.numOfChirpsAccum = 0;
-    mmwcfg.frameCfg.burstPeriodus = 1200; // 4000 -> 1200
+    mmwcfg.frameCfg.burstPeriodus = 4000;
     mmwcfg.frameCfg.numOfBurstsInFrame = 1;
-    mmwcfg.frameCfg.framePeriodicityus = (64 * 1000); // 200 -> 64
+    mmwcfg.frameCfg.framePeriodicityus = (64 * 1000);
     mmwcfg.frameCfg.numOfFrames = 0;
 
     /*Populate the Start configuration: */
@@ -884,13 +852,9 @@ void mmwave_example_main(void* args)
 
 
     /* Debug Message: */
-    MmWave_serialWrite ("*************************************\r\n");
+    MmWave_serialWrite ("***********************\r\n");
     MmWave_serialWrite ("Debug: Launching mmwave\r\n");
-    #if (SPI_ENABLE == 1U)
-    MmWave_serialWrite ("SPI Mode: MASTER (AWRL6844 generates clock)\r\n");
-    MmWave_serialWrite ("FT4222H should be configured as SPI SLAVE\r\n");
-    #endif
-    MmWave_serialWrite ("*************************************\r\n");
+    MmWave_serialWrite ("***********************\r\n");
 
     errorCode = SemaphoreP_constructBinary(&mmwaveFrameSemHandle, 0);
     DebugP_assert(SystemP_SUCCESS == errorCode);

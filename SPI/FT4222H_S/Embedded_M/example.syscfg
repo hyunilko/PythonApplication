@@ -53,16 +53,15 @@ gpio2.pinDir               = "OUTPUT";
 gpio2.$name                = "CONFIG_FRAME_LED";
 gpio2.GPIO.gpioPin.$assign = "PAD_AW";
 
-                    mcspi1.$name       = "CONFIG_MCSPI0";
-                    mcspi1.mode        = "PERIPHERAL";
-                    mcspi1.inputSelect = "1";
-                    mcspi1.dpe1        = "DISABLE";
-                    mcspi1.dpe0        = "ENABLE";
-                    mcspi1.intrEnable  = "POLLED";
-                    mcspi1.dmaEnable   = false;
-mcspi1.mcspiChannel[0].$name           = "CONFIG_MCSPI_CH0";
-mcspi1.mcspiChannel[0].advanced        = true;
-mcspi1.mcspiChannel[0].bitRate         = 30000000;
+                    mcspi1.$name               = "CONFIG_MCSPI0";
+                    mcspi1.advanced            = true;
+                    mcspi1.intrEnable          = "DMA";
+                    mcspi1.transferMode        = "CALLBACK";
+                    mcspi1.trMode              = "TX_ONLY";
+                    mcspi1.transferCallbackFxn = "spi_transfer_callback";
+mcspi1.mcspiChannel[0].$name                   = "CONFIG_MCSPI_CH0";
+mcspi1.mcspiChannel[0].advanced                = true;
+mcspi1.mcspiChannel[0].bitRate                 = 20000000;
 
 uart1.$name           = "CONFIG_UART_CONSOLE";
 uart1.intrEnable      = "DISABLE";
@@ -70,13 +69,15 @@ uart1.UART.$assign    = "UARTB";
 uart1.UART.RX.$assign = "PAD_AP";
 uart1.UART.TX.$assign = "PAD_AO";
 
-                          uart1.edmaConfig = edma1;
-                          edma1.$name      = "CONFIG_EDMA1";
-edma1.edmaRmDmaCh        [0].$name         = "CONFIG_EDMA_RM0";
-edma1.edmaRmQdmaCh       [0].$name         = "CONFIG_EDMA_RM1";
-edma1.edmaRmTcc          [0].$name         = "CONFIG_EDMA_RM2";
-edma1.edmaRmParam        [0].$name         = "CONFIG_EDMA_RM3";
-edma1.edmaRmReservedDmaCh[0].$name         = "CONFIG_EDMA_RM4";
+                          uart1.edmaConfig  = edma1;
+                          edma1.$name       = "CONFIG_EDMA1";
+                          mcspi1.edmaDriver = edma1;
+edma1.edmaRmDmaCh        [0].$name          = "CONFIG_EDMA_RM0";
+edma1.edmaRmQdmaCh       [0].$name          = "CONFIG_EDMA_RM1";
+edma1.edmaRmTcc          [0].$name          = "CONFIG_EDMA_RM2";
+edma1.edmaRmParam        [0].$name          = "CONFIG_EDMA_RM3";
+edma1.edmaRmReservedDmaCh[0].$name          = "CONFIG_EDMA_RM4";
+edma1.edmaRmReservedDmaCh[0].endIndex       = 63;
 
 mpu_armv71.$name             = "CONFIG_MPU_REGION0";
 mpu_armv71.attributes        = "NonCached";
@@ -139,10 +140,10 @@ mpu_armv710.baseAddr     = 0x83000000;
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
  * re-solve from scratch.
  */
-                    gpio1.GPIO.$suggestSolution        = "GPIO";
-                    gpio2.GPIO.$suggestSolution        = "GPIO";
-                    mcspi1.MCSPI.$suggestSolution      = "MCSPIA";
-                    mcspi1.MCSPI.CLK.$suggestSolution  = "PAD_AG";
-                    mcspi1.MCSPI.MOSI.$suggestSolution = "PAD_AI";
-                    mcspi1.MCSPI.MISO.$suggestSolution = "PAD_AJ";
-mcspi1.mcspiChannel[0].CSn.$suggestSolution            = "PAD_AH";
+gpio1.GPIO.$suggestSolution   = "GPIO";
+gpio2.GPIO.$suggestSolution   = "GPIO";
+mcspi1.MCSPI.$suggestSolution = "MCSPIA";
+mcspi1.MCSPI.CLK.$suggestSolution           = "PAD_AG";
+mcspi1.MCSPI.MOSI.$suggestSolution          = "PAD_AI";
+mcspi1.MCSPI.MISO.$suggestSolution          = "PAD_AJ";
+mcspi1.mcspiChannel[0].CSn.$suggestSolution = "PAD_AH";
