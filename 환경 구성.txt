@@ -1,5 +1,5 @@
 1. CAN_python용 가상환경 (PyQt6): 
-cd Z                       : \Texas_Instruments\AWRL6844\Python_App\CAN_python
+cd Z:\Texas_Instruments\AWRL6844\Python_App\CAN_python
 
 # 가상환경 설치
 python -m venv .venv

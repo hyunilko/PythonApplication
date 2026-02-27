@@ -3,7 +3,7 @@
   # -*- coding: utf-8 -*-
 """
 ft4222h_spi_data_streaming_slave_gui.py
- ====================================== 
+ ======================================
 
 FT4222H SPI SLAVE MODE GUI 애플리케이션 (PyQt6)
 
