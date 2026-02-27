@@ -1,0 +1,166 @@
+/**
+ * These arguments were used when this file was generated. They will be automatically applied on subsequent loads
+ * via the GUI or CLI. Run CLI with '--help' for additional information on how to override these arguments.
+ * @cliArgs --device "XWRL684X" --part "Default" --package "FCCSP" --context "r5fss0-0" --product "MMWAVE-L-SDK-6@06.01.00"
+ * @v2CliArgs --device "AWRL6844" --package "FCCSP (ANC)" --context "r5fss0-0" --product "MMWAVE-L-SDK-6@06.01.00"
+ * @versions {"tool":"1.26.0+4407"}
+ */
+
+/**
+ * Import the modules used in this configuration.
+ */
+const flash      = scripting.addModule("/board/flash/flash", {}, false);
+const flash1     = flash.addInstance();
+const pmic       = scripting.addModule("/board/pmic/pmic", {}, false);
+const pmic1      = pmic.addInstance();
+const adcbuf     = scripting.addModule("/drivers/adcbuf/adcbuf", {}, false);
+const adcbuf1    = adcbuf.addInstance();
+const cbuff      = scripting.addModule("/drivers/cbuff/cbuff", {}, false);
+const cbuff1     = cbuff.addInstance();
+const edma       = scripting.addModule("/drivers/edma/edma", {}, false);
+const edma1      = edma.addInstance();
+const edma2      = edma.addInstance();
+const edma3      = edma.addInstance();
+const gpio       = scripting.addModule("/drivers/gpio/gpio", {}, false);
+const gpio1      = gpio.addInstance();
+const gpio2      = gpio.addInstance();
+const hwa        = scripting.addModule("/drivers/hwa/hwa", {}, false);
+const hwa1       = hwa.addInstance();
+const i2c        = scripting.addModule("/drivers/i2c/i2c", {}, false);
+const i2c1       = i2c.addInstance();
+const ipc        = scripting.addModule("/drivers/ipc/ipc");
+const mcan       = scripting.addModule("/drivers/mcan/mcan", {}, false);
+const mcan1      = mcan.addInstance();
+const mcspi      = scripting.addModule("/drivers/mcspi/mcspi", {}, false);
+const mcspi1     = mcspi.addInstance();
+const power      = scripting.addModule("/drivers/power/power", {}, false);
+const power1     = power.addInstance();
+const uart       = scripting.addModule("/drivers/uart/uart", {}, false);
+const uart1      = uart.addInstance();
+const clock      = scripting.addModule("/kernel/dpl/clock");
+const debug_log  = scripting.addModule("/kernel/dpl/debug_log");
+const mpu_armv7  = scripting.addModule("/kernel/dpl/mpu_armv7", {}, false);
+const mpu_armv71 = mpu_armv7.addInstance();
+const mpu_armv72 = mpu_armv7.addInstance();
+
+/**
+ * Write custom configuration values to the imported modules.
+ */
+flash1.$name                  = "CONFIG_FLASH0";
+flash1.peripheralDriver.$name = "CONFIG_QSPI0";
+
+pmic1.$name = "CONFIG_PMIC0";
+
+adcbuf1.$name = "CONFIG_ADCBUF0";
+
+cbuff1.$name = "CONFIG_CBUFF0";
+
+edma2.$name                        = "CONFIG_EDMA1";
+edma2.instance                     = "EDMA_DSS_B";
+edma2.regionId                     = 1;
+edma2.edmaRmDmaCh[0].$name         = "CONFIG_EDMA_RM5";
+edma2.edmaRmQdmaCh[0].$name        = "CONFIG_EDMA_RM6";
+edma2.edmaRmTcc[0].$name           = "CONFIG_EDMA_RM7";
+edma2.edmaRmParam[0].$name         = "CONFIG_EDMA_RM8";
+edma2.edmaRmReservedDmaCh[0].$name = "CONFIG_EDMA_RM9";
+
+edma3.$name                        = "CONFIG_EDMA2";
+edma3.edmaRmDmaCh[0].$name         = "CONFIG_EDMA_RM10";
+edma3.edmaRmQdmaCh[0].$name        = "CONFIG_EDMA_RM11";
+edma3.edmaRmTcc[0].$name           = "CONFIG_EDMA_RM12";
+edma3.edmaRmParam[0].$name         = "CONFIG_EDMA_RM13";
+edma3.edmaRmReservedDmaCh[0].$name = "CONFIG_EDMA_RM14";
+
+gpio1.pinDir               = "OUTPUT";
+gpio1.$name                = "GPIO_LED";
+gpio1.GPIO.gpioPin.$assign = "PAD_AW";
+
+gpio2.$name                = "SPI_HOST_INTR";
+gpio2.pinDir               = "OUTPUT";
+gpio2.GPIO.gpioPin.$assign = "PAD_AV";
+
+hwa1.$name = "CONFIG_HWA0";
+
+i2c1.$name           = "CONFIG_I2C0";
+i2c1.I2C.SCL.$assign = "PAD_BC";
+i2c1.I2C.SDA.$assign = "PAD_BD";
+
+mcan1.$name = "CONFIG_MCAN0";
+
+mcspi1.$name                       = "CONFIG_MCSPI0";
+mcspi1.mode                        = "MULTI_CONTROLLER";
+mcspi1.dmaEnable                   = false;
+mcspi1.MCSPI.$assign               = "MCSPIA";
+mcspi1.mcspiChannel.create(2);
+mcspi1.mcspiChannel[0].$name       = "CONFIG_MCSPI_CH0";
+mcspi1.mcspiChannel[0].advanced    = true;
+mcspi1.mcspiChannel[0].CSn.$assign = "PAD_AH";
+mcspi1.mcspiChannel[1].$name       = "CONFIG_MCSPI_CH1";
+mcspi1.mcspiChannel[1].bitRate     = 20000000;
+mcspi1.mcspiChannel[1].advanced    = true;
+mcspi1.mcspiChannel[1].slvCsSelect = 1;
+mcspi1.mcspiChannel[1].CSn.$assign = "PAD_AL";
+
+power1.$name                        = "CONFIG_POWER0";
+power1.enteridle3HookFunction       = "power_idle3entryhook";
+power1.resumeidle3HookFunction      = "power_idle3resumehook";
+power1.enterLPDSHookFunction        = "power_LPDSentryhook";
+power1.enableSleepCounterWakeupLPDS = true;
+power1.totalLatencyForIdle          = 1700;
+power1.resumeLPDSHookFunction       = "power_LPDSresumehook";
+power1.enableUartWakeupLPDS         = true;
+power1.ramRetentionMaskLPDS         = ["APP_PD_SRAM_CLUSTER_1","APP_PD_SRAM_CLUSTER_10","APP_PD_SRAM_CLUSTER_2","APP_PD_SRAM_CLUSTER_5","APP_PD_SRAM_CLUSTER_6","APP_PD_SRAM_CLUSTER_7","APP_PD_SRAM_CLUSTER_8","APP_PD_SRAM_CLUSTER_9","DSS_PD_SRAM_CLUSTER_2","DSS_PD_SRAM_CLUSTER_4","DSS_PD_SRAM_CLUSTER_5","DSS_PD_SRAM_CLUSTER_6","DSS_PD_SRAM_CLUSTER_7","FEC_PD_SRAM_CLUSTER_1","FEC_PD_SRAM_CLUSTER_2","FEC_PD_SRAM_CLUSTER_3"];
+power1.thresholdForLPDS             = 6000;
+power1.totalLatencyForLPDS          = 5000;
+power1.rtiConfig.$name              = "CONFIG_RTI0";
+power1.rtiConfig.counter1Enable     = true;
+power1.parkPins.$name               = "drivers_power_v0_power_v0_pins0";
+
+uart1.$name           = "CONFIG_UART0";
+uart1.UART.RX.$assign = "PAD_AP";
+uart1.UART.TX.$assign = "PAD_AO";
+
+edma1.$name                        = "CONFIG_EDMA0";
+flash1.peripheralDriver.edmaConfig = edma1;
+edma1.instance                     = "EDMA_DSS_A";
+cbuff1.edmaConfig                  = edma1;
+uart1.edmaConfig                   = edma1;
+edma1.edmaRmDmaCh[0].$name         = "CONFIG_EDMA_RM0";
+edma1.edmaRmQdmaCh[0].$name        = "CONFIG_EDMA_RM1";
+edma1.edmaRmTcc[0].$name           = "CONFIG_EDMA_RM2";
+edma1.edmaRmParam[0].$name         = "CONFIG_EDMA_RM3";
+edma1.edmaRmReservedDmaCh[0].$name = "CONFIG_EDMA_RM4";
+
+clock.DSPClockFreq = "SOC_C66CoreFreq400MHz";
+
+mpu_armv71.$name      = "CONFIG_MPU_REGION0";
+mpu_armv71.attributes = "NonCached";
+
+mpu_armv72.$name        = "CONFIG_MPU_REGION2";
+mpu_armv72.size         = 28;
+mpu_armv72.baseAddr     = 0x50000000;
+mpu_armv72.allowExecute = false;
+mpu_armv72.attributes   = "Device";
+
+/**
+ * Pinmux solution for unlocked pins/peripherals. This ensures that minor changes to the automatic solver in a future
+ * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
+ * re-solve from scratch.
+ */
+flash1.peripheralDriver.QSPI.$suggestSolution       = "QSPI0";
+flash1.peripheralDriver.QSPI.DOUT.$suggestSolution  = "PAD_AC";
+flash1.peripheralDriver.QSPI.DIN.$suggestSolution   = "PAD_AD";
+flash1.peripheralDriver.QSPI.QDIN0.$suggestSolution = "PAD_AE";
+flash1.peripheralDriver.QSPI.QDIN1.$suggestSolution = "PAD_AF";
+flash1.peripheralDriver.QSPI.CLK.$suggestSolution   = "PAD_AA";
+flash1.peripheralDriver.QSPI.N.$suggestSolution     = "PAD_AB";
+gpio1.GPIO.$suggestSolution                         = "GPIO";
+gpio2.GPIO.$suggestSolution                         = "GPIO";
+i2c1.I2C.$suggestSolution                           = "I2C0";
+mcan1.MCAN.$suggestSolution                         = "MCANA";
+mcan1.MCAN.RX.$suggestSolution                      = "PAD_AM";
+mcan1.MCAN.TX.$suggestSolution                      = "PAD_AN";
+mcspi1.MCSPI.CLK.$suggestSolution                   = "PAD_AG";
+mcspi1.MCSPI.MOSI.$suggestSolution                  = "PAD_AI";
+mcspi1.MCSPI.MISO.$suggestSolution                  = "PAD_AJ";
+uart1.UART.$suggestSolution                         = "UARTB";
