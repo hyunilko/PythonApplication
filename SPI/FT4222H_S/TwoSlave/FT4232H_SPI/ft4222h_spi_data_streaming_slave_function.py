@@ -42,6 +42,31 @@ DEFAULT_FRAME_SIZE = 64 * 1024   # 32KB default (configurable)
 API_SAFE_MAX_READ = 65535
 DEFAULT_CHUNK_SIZE = 64 * 1024   # 65536 for simple CLI
 
+# =============================================================================
+# 읽는 방법 (PyQt GUI와의 연결 포인트)
+# =============================================================================
+# - 이 파일은 "기능 모듈"이며, GUI/CLI 어디서든 재사용 가능하도록 콜백 기반으로 구성되어 있습니다.
+# - GUI(PyQt)에서는 보통 QThread에서 SpiCapture.start()/run()을 실행하고,
+#   콜백(status/error/progress/preview/finished)을 Qt signal로 변환하여 UI를 업데이트합니다.
+#
+# 캡처 흐름(요약):
+#   STEP 1) FT4222 장치 오픈 (SPI 디바이스, GPIO 디바이스)
+#   STEP 2) GPIO 입력 초기화 + SPI Slave 초기화(InitEx/Init 호환 + CPOL/CPHA 설정)
+#   STEP 3) (옵션) RX 버퍼 flush (이전 실행 잔여/USB 잔여 데이터 제거)
+#   STEP 4) 캡처 루프:
+#           - HOST_INTR LOW 대기(프레임 시작 신호)
+#           - 프레임 읽기(고정 길이 또는 APP_PDU 가변 길이)
+#           - (옵션) HOST_INTR HIGH 대기(프레임 종료/idle 신호)
+#           - (옵션) byteswap32 적용(엔디안/워드 정렬 보정)
+#           - (옵션) 프레임 경계 동기화(헤더 0x12345678 기반)
+#           - 저장/프리뷰/검증/통계 출력
+#   STEP 5) 종료 처리: fast_mode 버퍼 저장(옵션) + 디바이스 close
+#
+# 중요: stop()은 즉시 강제 종료가 아니라, 루프에서 _running 플래그를 체크하는 지점에서
+#       "중단 요청"이 반영됩니다. (대기/읽기 중이면 timeout 이후 다음 반복에서 멈출 수 있음)
+# =============================================================================
+
+
 # ======================== FT4222 helpers ========================
 
 def list_ft4222_devices() -> List[Dict[str, Any]]:
@@ -72,7 +97,20 @@ def list_ft4222_devices() -> List[Dict[str, Any]]:
 
 def open_by_index_compat(index: int):
     """
-    인덱스로 FT4222 장치를 엽니다(호환성 폴백 포함).
+    인덱스로 FT4222 장치를 엽니다(바인딩 버전 호환 포함).
+    
+    Args:
+        index (int): createDeviceInfoList() 기반 장치 인덱스.
+    
+    Returns:
+        Any: ft4222 장치 핸들(버전에 따라 타입이 다를 수 있음).
+    
+    Raises:
+        RuntimeError: 장치를 열 수 없을 때.
+    
+    Notes:
+        - 어떤 버전은 ft4222.open(index)를 제공하고,
+          어떤 버전은 openByLocation(location)만 제공할 수 있어 폴백합니다.
     """
     if hasattr(ft4222, "open"):
         return ft4222.open(index)
@@ -91,7 +129,20 @@ def open_by_index_compat(index: int):
 
 def open_by_desc_or_index(desc: str, index: Optional[int]):
     """
-    FT4222 장치를 description으로 열고, 실패 시 index로 폴백합니다.
+    description(예: "FT4222 A")로 장치를 먼저 열고, 실패 시 index로 폴백하여 엽니다.
+    
+    Args:
+        desc (str): FT4222 description 문자열(FTDI EEPROM에 설정된 값).
+        index (Optional[int]): desc로 열기 실패 시 사용할 인덱스.
+    
+    Returns:
+        Any: ft4222 장치 핸들.
+    
+    Raises:
+        Exception: desc와 index 모두로 열기 실패 시 원 예외가 전파될 수 있습니다.
+    
+    Notes:
+        - openByDescription()은 바인딩에 따라 bytes 인자를 요구할 수 있어 encode 폴백을 포함합니다.
     """
     try:
         return ft4222.openByDescription(desc)
@@ -315,10 +366,13 @@ def spi_slave_read_once(spi, nbytes: int) -> bytes:
                   "spiSlave_ReadBytes", "spiSlave_Receive")
     last_err = None
     for name in candidates:
+        # [설명] ft4222 바인딩/버전에 따라 읽기 함수 이름이 다를 수 있어, 후보들을 순서대로 시도합니다.
+        #         hasattr()로 존재 여부를 확인하고, 성공하는 API를 찾는 즉시 반환합니다.
         if hasattr(spi, name):
             fn = getattr(spi, name)
             try:
                 r = fn(nbytes)
+                # [설명] 가장 흔한 시그니처는 fn(nbytes) 형태입니다. (요청 크기만큼 읽기 시도)
                 if isinstance(r, tuple):
                     for item in r:
                         if isinstance(item, (bytes, bytearray)):
@@ -328,6 +382,8 @@ def spi_slave_read_once(spi, nbytes: int) -> bytes:
                     return b""
                 return bytes(r)
             except TypeError:
+                # [설명] TypeError는 보통 "인자 개수가 다른 시그니처"일 때 발생합니다.
+                #         예: fn(nbytes) 대신 fn(nbytes, timeout) 또는 fn(nbytes, 0) 형태가 필요할 수 있습니다.
                 try:
                     r = fn(nbytes, 0)
                     if isinstance(r, tuple):
@@ -353,18 +409,24 @@ def spi_slave_read_exact(spi, nbytes: int, timeout_s: float,
     지정된 바이트 수만큼 정확히 읽습니다(타임아웃 내).
     """
     out = bytearray()
+    # [설명] out에 수신 데이터를 누적하여 최종적으로 nbytes가 될 때까지 반복합니다.
     t0 = time.perf_counter()
     stall_count = 0
 
     while len(out) < nbytes:
+        # [설명] FT4222/USB 특성상 한 번의 read로 원하는 길이가 "항상" 오지 않을 수 있어 반복합니다.
         if (time.perf_counter() - t0) > timeout_s:
             raise TimeoutError(f"read_exact: got {len(out)}/{nbytes} bytes")
+            # [설명] 여기서 raise가 실행되면 while을 즉시 종료하고, 함수 밖(호출자)으로 예외가 전파됩니다.
 
         remain = nbytes - len(out)
         want = min(remain, chunk_size, API_SAFE_MAX_READ)
+        # [설명] 한 번에 읽을 크기를 제한합니다. (너무 크게 요청하면 드라이버/바인딩에서 문제가 날 수 있음)
         b = spi_slave_read_once(spi, want)
 
         if not b:
+            # [설명] 아직 RX FIFO에 데이터가 없거나, 드라이버가 0바이트를 돌려준 상태입니다.
+            #         짧게 sleep하여 CPU를 과도하게 사용하지 않도록 합니다(바쁜 루프 방지).
             stall_count += 1
             if stall_count > 100:
                 time.sleep(0.001)
@@ -460,15 +522,36 @@ def find_frame_sync_offset(data: bytes, debug: bool = False) -> int:
 
 def spi_slave_init_stable(dev_spi, cpol, cpha, initex_override: Optional[int] = None):
     """
-    SPI Slave 모드를 초기화합니다(다양한 API 버전 호환).
+    SPI Slave 모드를 초기화합니다(바인딩/버전 호환 포함).
+    
+    Args:
+        dev_spi: ft4222 장치 핸들(또는 SPI 객체를 포함한 상위 객체).
+        cpol: ft4222.SPI.Cpol 값.
+        cpha: ft4222.SPI.Cpha 값.
+        initex_override (Optional[int]): spiSlave_InitEx에 전달할 모드 값을 강제 지정(1/2/0 등).
+    
+    Returns:
+        spi: 실제 SPI Slave API를 제공하는 객체(버전에 따라 dev_spi 자체 또는 하위 객체).
+    
+    Raises:
+        RuntimeError: 초기화 API를 찾지 못하거나 InitEx 시도가 모두 실패한 경우.
+    
+    동작:
+        1) 가능한 경우 spi_Reset/spi_ResetTransaction로 상태 초기화(있으면 호출, 실패해도 무시)
+        2) InitEx가 있으면 (override 또는 1,2,0 순) 시도
+           InitEx가 없으면 Init()를 시도
+        3) SetMode API가 있으면 CPOL/CPHA 설정
     """
     spi = _find_spi_obj(dev_spi)
 
     for rn in ("spi_Reset", "spi_ResetTransaction"):
+        # [설명] 초기화 전에 가능한 경우 SPI 내부 상태/트랜잭션을 리셋합니다.
+        #         바인딩 버전에 따라 함수명이 다를 수 있어 두 가지를 시도합니다.
         if hasattr(spi, rn):
             try:
                 getattr(spi, rn)()
             except Exception:
+                # [설명] 리셋은 "가능하면 수행" 단계입니다. 실패하더라도 캡처를 중단하지 않고 다음 단계로 진행합니다.
                 pass
 
     if hasattr(spi, "spiSlave_InitEx"):
@@ -628,21 +711,46 @@ class SpiCapture:
         self._running = False
 
     def run(self):
+        """
+        캡처 메인 루프를 실행합니다.
+        
+        큰 흐름:
+          1) FT4222 장치 오픈(SPI/GPIO)
+          2) GPIO 입력 초기화 + SPI Slave 초기화
+          3) (옵션) RX 버퍼 flush
+          4) INTR 신호(LOW)를 기다렸다가 프레임 읽기
+          5) (옵션) byteswap/프레임 동기화/프리뷰/검증/저장
+          6) 종료 시 장치 close
+        """
         try:
-            # 장치 열기
+            # ==============================
+            # STEP 1) 장치 열기
+            # ==============================
             self._dev_spi = open_by_desc_or_index(self.settings.spi_desc, self.settings.spi_dev_index)
+            # [설명] SPI용 FT4222 핸들을 엽니다. description이 실패하면 index로 폴백합니다.
             self._dev_gpio = open_by_desc_or_index(self.settings.gpio_desc, self.settings.gpio_dev_index) if self.settings.gpio_desc != self.settings.spi_desc else self._dev_spi
+            # [설명] GPIO용 FT4222 핸들입니다. 같은 디바이스(같은 desc)면 SPI 핸들을 공유합니다.
 
-            # 초기화
+            # ==============================
+            # STEP 2) GPIO/SPI 초기화
+            # ==============================
             gpio_init_input_all(self._dev_gpio)
+            # [설명] HOST_INTR을 읽기 위해 P0~P3를 모두 INPUT으로 설정합니다.
             cpol, cpha = spi_mode_to_cpol_cpha(self.settings.spi_mode)
             self._spi = spi_slave_init_stable(self._dev_spi, cpol, cpha, self.settings.initex_mode)
+            # [설명] SPI Slave 모드를 안정적으로 초기화합니다(InitEx/Init 호환 + 모드 설정).
 
-            # 플러시 등
+            # ==============================
+            # STEP 3) (옵션) RX 버퍼 플러시
+            # ==============================
             if self.settings.flush_before_start:
+                # [설명] 시작 전 RX 버퍼에 남아있는 잔여/쓰레기 데이터를 제거하여 첫 프레임 동기 실패를 줄입니다.
                 spi_slave_flush_aggressive(self._spi)
 
-            # 캡처 루프 (gui.py와 simple.py의 로직 합침)
+            # ==============================
+            # STEP 4) 캡처 루프
+            #   - INTR LOW 대기 -> 프레임 읽기 -> (옵션) INTR HIGH -> byteswap/sync -> 저장/프리뷰/로그
+            # ============================== (gui.py와 simple.py의 로직 합침)
             frame_count = 0
             total_bytes = 0
             start_t = time.perf_counter()
@@ -652,17 +760,23 @@ class SpiCapture:
             last_stat_bytes = 0
             last_stat_frames = 0
             frame_buffer = [] if self.settings.fast_mode else None
+            # [설명] fast_mode=True이면 프레임을 메모리에 모았다가 종료 시 한 번에 저장합니다(디스크 I/O 부담 감소).
             carry_over = b""
+            # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
             aligned = False
+            # [설명] aligned=False이면 아직 프레임 헤더(12 34 56 78)를 정확히 경계(offset=0)에서 맞추지 못한 상태입니다.
             expected_cnt = None
 
             total_for_progress = self.settings.num_frames if self.settings.num_frames > 0 else 0
 
             intr_port = port_enum(self.settings.host_intr_port)
+            # [설명] GUI/CLI에서 받은 정수 포트 번호(0~3)를 Port 열거형으로 변환합니다.
 
             while self._running and (self.settings.num_frames == 0 or frame_count < self.settings.num_frames):
+            # [설명] num_frames==0이면 무한 캡처(사용자가 Stop 누를 때까지)로 동작합니다.
                 try:
                     gpio_wait_low(self._dev_gpio, intr_port, self.settings.timeout_s,
+                    # [설명] 센서(마스터)가 "프레임 준비"를 알리면 HOST_INTR이 LOW로 내려온다고 가정하고 대기합니다.
                                   self.settings.intr_stable_reads, self.settings.intr_stable_sleep_us)
                 except TimeoutError:
                     self.status_callback(f"[FRAME {frame_count+1}] Timeout waiting INTR LOW")
@@ -671,32 +785,43 @@ class SpiCapture:
 
                 try:
                     if self.settings.variable_frame:
+                        # [설명] variable_frame=True이면 APP_PDU 헤더(16B)에서 payload_length를 읽어 가변 길이로 수신합니다.
+                        #         False이면 frame_size 고정 길이로 그대로 읽습니다.
                         if len(carry_over) >= 16:
+                            # [설명] 이전에 남겨둔 carry_over에 헤더 일부/전부가 있으면 먼저 소비합니다.
                             header_data = carry_over[:16]
                             carry_over = carry_over[16:]
                         else:
                             need_header = 16 - len(carry_over)
+                            # [설명] 헤더 16바이트를 채우기 위해 부족한 만큼만 추가로 읽습니다.
                             new_header = spi_slave_read_exact(self._spi, need_header, self.settings.spi_read_timeout_s,
                                                               self.settings.read_chunk_size)
                             header_data = carry_over + new_header
                             carry_over = b""
+                            # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
 
                         if not check_frame_header_simple(header_data):
+                            # [설명] 헤더 매직(12 34 56 78)이 아니면 프레임 경계가 어긋난 상태일 가능성이 큽니다.
                             self.status_callback(f"[FRAME {frame_count+1}] Header mismatch")
                             offset = find_frame_sync_offset(header_data + spi_slave_read_once(self._spi, 4096))
+                            # [설명] 현재 버퍼에서 헤더 패턴이 어디에 있는지 찾아 재동기(resync)합니다.
                             if offset > 0:
                                 carry_over = header_data[offset:]
                             else:
                                 spi_slave_flush(self._spi)
                                 carry_over = b""
+                                # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
                             continue
 
                         hdr = parse_app_pdu_header(header_data)
                         payload_len = hdr["payload_length"]
+                        # [설명] APP_PDU 헤더의 payload_length만큼 payload를 읽어 raw_frame(헤더+payload)을 구성합니다.
                         if payload_len == 0 or payload_len > 65536:
+                            # [설명] 비정상 길이는 동기 깨짐/노이즈 가능성이 높아 flush 후 다음 프레임을 기다립니다.
                             self.status_callback(f"[FRAME {frame_count+1}] Invalid payload_length={payload_len}")
                             spi_slave_flush(self._spi)
                             carry_over = b""
+                            # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
                             continue
 
                         if len(carry_over) >= payload_len:
@@ -704,28 +829,36 @@ class SpiCapture:
                             carry_over = carry_over[payload_len:]
                         else:
                             need_payload = payload_len - len(carry_over)
+                            # [설명] payload도 carry_over에 일부가 있을 수 있으므로 부족분만 추가로 읽습니다.
                             new_payload = spi_slave_read_exact(self._spi, need_payload, self.settings.spi_read_timeout_s,
                                                                self.settings.read_chunk_size)
                             payload_data = carry_over + new_payload
                             carry_over = b""
+                            # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
 
                         raw_frame = header_data + payload_data
                     else:
                         need_bytes = self.settings.frame_size - len(carry_over)
+                        # [설명] 고정 길이 모드에서는 frame_size를 정확히 채워서 한 프레임으로 취급합니다.
                         new_data = spi_slave_read_exact(self._spi, need_bytes, self.settings.spi_read_timeout_s,
                                                         self.settings.read_chunk_size)
                         raw_frame = carry_over + new_data
                         carry_over = b""
+                        # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
 
                 except TimeoutError as e:
+                    # [설명] SPI read가 timeout이면 현재 프레임은 실패로 보고 RX를 flush + 동기 상태(aligned)를 초기화합니다.
                     self.status_callback(f"[FRAME {frame_count+1}] Read timeout: {e}")
                     self.chunk_timeout_cnt += 1
                     spi_slave_flush(self._spi)
                     carry_over = b""
+                    # [설명] 프레임 경계가 깨졌을 때(동기 오프셋) 남는 바이트를 다음 프레임에 이어붙이기 위한 버퍼입니다.
                     aligned = False
+                    # [설명] aligned=False이면 아직 프레임 헤더(12 34 56 78)를 정확히 경계(offset=0)에서 맞추지 못한 상태입니다.
                     continue
 
                 if self.settings.wait_intr_high:
+                    # [설명] 프레임 전송이 끝났음을 INTR HIGH로 확인하고 싶을 때 사용합니다(옵션).
                     try:
                         gpio_wait_high(self._dev_gpio, intr_port, self.settings.timeout_s,
                                        self.settings.intr_stable_reads, self.settings.intr_stable_sleep_us)
@@ -734,17 +867,22 @@ class SpiCapture:
                         self.frame_timeout_cnt += 1
 
                 test_frame = byteswap32_fast(raw_frame) if self.settings.byteswap32 else raw_frame
+                # [설명] byteswap32=True이면 32-bit 단위 엔디안 스왑을 적용하여 펌웨어 원본 바이트 순서로 복원합니다.
                 if not aligned:
+                    # [설명] 아직 경계가 맞지 않으면 프레임 내에서 헤더 패턴 위치를 찾아 offset=0이 되도록 맞춥니다.
                     offset = find_frame_sync_offset(test_frame)
+                    # [설명] 현재 버퍼에서 헤더 패턴이 어디에 있는지 찾아 재동기(resync)합니다.
                     if offset == 0:
                         aligned = True
                     elif offset > 0:
                         carry_over = raw_frame[offset:] + spi_slave_read_exact(self._spi, offset, self.settings.spi_read_timeout_s)
+                        # [설명] offset만큼 앞부분을 버리고, 부족한 만큼을 추가로 읽어 정확히 frame_size가 되게 재조립합니다.
                         if len(carry_over) >= self.settings.frame_size:
                             raw_frame = carry_over[:self.settings.frame_size]
                             carry_over = carry_over[self.settings.frame_size:]
                             aligned = True
                             test_frame = byteswap32_fast(raw_frame) if self.settings.byteswap32 else raw_frame
+                            # [설명] byteswap32=True이면 32-bit 단위 엔디안 스왑을 적용하여 펌웨어 원본 바이트 순서로 복원합니다.
                         else:
                             continue
                     else:
@@ -755,9 +893,11 @@ class SpiCapture:
                 frame = test_frame
 
                 frame_count += 1
+                # [설명] 여기부터는 정상 프레임으로 인정하고 카운터/통계에 반영합니다.
                 total_bytes += len(frame)
 
                 if self.settings.save_to_file:
+                    # [설명] 저장 모드: fast_mode면 메모리 누적, 아니면 프레임마다 즉시 파일로 씁니다.
                     if self.settings.fast_mode:
                         frame_buffer.append(frame)
                     else:
@@ -766,11 +906,14 @@ class SpiCapture:
                             f.write(frame)
 
                 self.progress_callback(frame_count, total_for_progress)
+                # [설명] GUI 진행률 바 업데이트를 위한 콜백입니다. (current, total)
 
                 if self.settings.preview_every > 0 and (frame_count % self.settings.preview_every) == 0:
+                    # [설명] N프레임마다 프리뷰 콜백을 호출합니다(기본 64바이트). GUI에서 헥사로 표시할 때 사용합니다.
                     self.preview_callback(frame[:64])
 
                     if self.settings.preview_detailed:
+                        # [설명] detailed 프리뷰: RAW/스왑/페이로드 일부 출력 + (옵션) verify_frame으로 간단 검증을 수행합니다.
                         # 프리뷰 출력 + 간단 검증
                         # Payload starts at byte 16 (after 16-byte header)
                         if self.settings.preview_payload_only:
@@ -786,6 +929,7 @@ class SpiCapture:
                         self.status_callback(f"[SLAVE][PREVIEW][{preview_label}] " + " ".join(f"{b:02X}" for b in pr_sw))
                         if self.settings.verify_preview:
                             v = verify_frame(frame, expected_cnt)
+                            # [설명] expected_cnt(예상 frame_count)와 실제 헤더의 frame_count를 비교하여 누락/점프를 감지합니다.
                             cnt = v["cnt"]
                             if expected_cnt is None and cnt is not None:
                                 expected_cnt = cnt
@@ -797,10 +941,12 @@ class SpiCapture:
                                 if not self.settings.preview_raw:
                                     self.status_callback("[SLAVE][PREVIEW][RAW ] " + " ".join(f"{b:02X}" for b in pr_raw))
                                 if self.settings.stop_on_error:
+                                    # [설명] 검증 실패 시 즉시 캡처를 중단하고 루프를 빠져나옵니다.
                                     self.status_callback("[STOP] stop_on_error triggered.")
                                     break
 
                 if self.settings.log_every > 0 and (frame_count % self.settings.log_every) == 0:
+                    # [설명] 주기적으로 속도(MB/s), FPS, 누적 전송량, timeout 카운트를 로그로 출력합니다.
                     now = time.perf_counter()
                     elapsed_interval = now - last_stat_time
                     interval_bytes = total_bytes - last_stat_bytes
@@ -825,12 +971,17 @@ class SpiCapture:
                     last_stat_frames = frame_count
 
             if self.settings.fast_mode and self.settings.save_to_file and frame_buffer:
+                # [설명] fast_mode에서는 여기서 한 번에 저장합니다. (캡처 중 디스크 쓰기 지연을 줄이기 위함)
                 self.status_callback(f"\n[SAVE] Writing {len(frame_buffer)} frames to disk...")
                 for i, frm in enumerate(frame_buffer, start=1):
                     out_path = make_frame_path(self.settings.out_dir, i)
                     with open(out_path, "wb") as f:
                         f.write(frm)
                 frame_buffer.clear()
+
+# ==============================
+            # STEP 6) 요약 출력
+            # ==============================
 
             elapsed = time.perf_counter() - start_t
             fps = (frame_count / elapsed) if elapsed > 0 else 0.0
@@ -854,10 +1005,17 @@ class SpiCapture:
             self.error_callback(f"Capture error: {e}\n{traceback.format_exc()}")
 
         finally:
+            # [설명] 정상/예외 종료와 무관하게 장치 close 및 finished 콜백을 보장합니다.
             self._cleanup()
             self.finished_callback()
 
     def _cleanup(self):
+        """
+        FT4222 디바이스 핸들을 안전하게 종료(close)합니다.
+        
+        - 예외가 나더라도 프로그램이 죽지 않도록 try/except로 보호합니다.
+        - GPIO 디바이스를 별도로 열었을 때만 추가로 close 합니다.
+        """
         try:
             if self._dev_spi:
                 self._dev_spi.close()
