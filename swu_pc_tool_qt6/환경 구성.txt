@@ -1,5 +1,5 @@
-1. CAN_python용 가상환경 (PyQt6): 
-cd Z:\Texas_Instruments\AWRL6844\Python_App\CAN_python
+1. HKMC_INCAB_AWRL6432AOP용 가상환경 (PyQt5): 
+cd Z:\Texas_Instruments\AWRL6844\Python_App\swu_pc_tool_qt6
 
 # 가상환경 설치
 python -m venv .venv
@@ -14,7 +14,7 @@ python.exe -m pip install --upgrade pip
 pip install -r requirements.txt
 
 실행
-.\.venv\Scripts\python.exe can_custom_tp_manager_gui.py
+.\.venv\Scripts\python.exe swu_gui_qt6.py
 
 # 현재 사용자에게 영구 허용
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser

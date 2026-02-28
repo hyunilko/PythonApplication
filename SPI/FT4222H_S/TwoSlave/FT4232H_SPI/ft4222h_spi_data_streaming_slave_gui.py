@@ -1,9 +1,9 @@
-  # File: ft4222h_spi_data_streaming_slave_gui.py
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+# File: ft4222h_spi_data_streaming_slave_gui.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 ft4222h_spi_data_streaming_slave_gui.py
- ======================================
+======================================
 
 FT4222H SPI SLAVE MODE GUI 애플리케이션 (PyQt6)
 
@@ -82,7 +82,7 @@ class CaptureWorker(QObject):
 
     def __init__(self, settings: CaptureSettings): 
         super().__init__()
-                     self.settings         = settings
+        self.settings         = settings
         self.capture: Optional[SpiCapture] = None
 
     @pyqtSlot()
@@ -414,8 +414,8 @@ class MainWindow(QMainWindow):
             self.spi_combo.addItem(label, user)
             self.gpio_combo.addItem(label, user)
 
-          # 디바이스가 2개 이상이면 A/B를 분리해서 기본 선택
-        if len(devices) > = 2:
+        # 디바이스가 2개 이상이면 A/B를 분리해서 기본 선택
+        if len(devices) >= 2:
             self.spi_combo.setCurrentIndex(0)
             self.gpio_combo.setCurrentIndex(1)
         elif len(devices) == 1:
