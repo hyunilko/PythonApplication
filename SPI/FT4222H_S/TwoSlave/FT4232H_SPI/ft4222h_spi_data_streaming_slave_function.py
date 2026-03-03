@@ -18,7 +18,7 @@ ADC 데이터를 수신하는 공통 기능을 제공합니다. GUI 또는 CLI�
 
 Dependencies:
 - ft4222
-- (optional for CLI) argparse
+- Windows: FTDI LibFT4222 / D2XX 드라이버 설치 필요
 
 :author:
 :date: 2026

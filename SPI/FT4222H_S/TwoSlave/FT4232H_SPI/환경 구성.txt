@@ -1,0 +1,15 @@
+🔵 Windows: 
+FTDI LibFT4222 / D2XX 드라이버 설치 필요
+https://ftdichip.com/drivers/
+
+https://ftdichip.com/software-examples/ft4222h-software-examples/
+
+C:\Users\huuhuh\Downloads\LibFT4222-v1.4.8\imports\ftd2xx\dll\amd64\ftd2xx.lib
+C:\Users\huuhuh\Downloads\LibFT4222-v1.4.8\imports\LibFT4222\dll\amd64\LibFT4222-64.dll
+이름 변경: LibFT4222-64.dll -> LibFT4222.dll
+
+C:\Windows\System32\ 폴더에 아래 두 파일 복사
+ftd2xx.lib, LibFT4222.dll
+
+
+
