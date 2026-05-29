@@ -1,0 +1,420 @@
+
+1.	Overview
+1.1	개요
+- Host(PC Tool)와 Target(AWRL6844 App/SBL)은 CAN 통신을 사용하여 SWU(Software Update)를 수행한다.
+- 제어 명령(Command) 및 ACK는 CAN FD 단일 프레임으로 전송한다. 
+- 펌웨어 데이터(DATA)는 대용량 전송을 위해 IsoTP 또는 CustomTP 기반의 다중 프레임으로 전송하며, Target은 reassembly 후 “상위 메시지(Upper message)” 단위로 처리한다. (10 장 참조)
+- Target(SBL)은 수신한 데이터를 QSPI Flash에 기록하고, CRC32로 무결성을 검증한 뒤 재부팅하여 애플리케이션을 실행한다.
+
+1.2	SWU Trigger 시나리오
+(1) Application(MSS) SWU Trigger + Flag 기반 진입
+      - App이 SWU_REQUEST를 수신하면 업데이트 필요 여부를 판단한다.
+      - 업데이트가 필요할 때만 SW Update Flag를 Flash에 저장하고 Warm Reset으로 SBL 진입을 트리거한다.
+      - SBL은 부팅 시 Flash의 SW Update Flag를 읽어 SWU(Download) 모드로 진입한다.
+
+   (2) SWU Info Flash 저장
+- SBL은 SWU_START 수신 시 SWU Info(model_id, sw_ver, date)를 RAM에 캐시한다.
+- SBL은 VERIFY_IMAGE 수신 시, 전체 이미지 CRC 검사 결과가 SUCCESS일 때만
+  캐시된 SWU Info(model_id, sw_ver, date)를 Flash(SWU_INFO_FLASH_ADDRESS)에 저장한다.
+- CRC 검사 실패(FAIL) 시에는 SWU Info를 Flash에 저장하지 않는다.
+- Flash에 저장하는 SWU Info는 model_id, sw_ver, date (총 12B) 3개 항목만 저장한다.
+
+  (3) App에서 동일 버전 트리거 방지
+      - App이 SWU_REQUEST를 받으면 model_id, sw_version이 현재 값과 같으면 트리거(Flag 저장/Reset)하지 않는다.
+
+  (4) SW Update Flag Clear 정책
+      - SW Update Flag는 SBL에서 지우지 않는다.
+      - “업데이트 성공”의 기준은 “APP가 정상 실행”으로 정의한다.
+      - APP가 정상 실행된 이후, 초기화 과정 중 “마지막 Task” 실행 시 SW Update Flag를 제거(erase)한다.
+      - 따라서 APP이 정상 실행 경로에 진입하지 못하면(부팅 중 크래시/워치독 등), Flag는 
+
+2.	통신/프레임 공통 규칙
+2.1	CAN ID 규칙 (Standard ID, 11-bit)
+ - Standard ID(11-bit)
+  [10:8]   = DeviceID (3 bits)
+  [7:0]    = MSG ID (8 bits)
+- CAN_ID   = (DeviceID << 8) | MSG_ID
+- DeviceID = 0이면 CAN_ID = MSG_ID (즉 0x32, 0x33, 0x50 그대로)
+
+2.2	MSG ID 정의
+- 0x32: Control Request Frame (CAN FD 단일 프레임)
+- 0x33: Data Frame (IsoTP/CustomTP 다중 프레임, reassembly 필요)
+- 0x50: ACK Frame (CAN FD 단일 프레임)
+
+2.3	Endianness 및 ID 바이트 순서
+- SWU 프로토콜(내부 페이로드)의 멀티바이트 필드는 Big Endian(BE)를 사용한다.
+- Command ID(3B) / ACK ID(3B)도 BE(MSB first)로 전송한다.
+
+- 예시
+CommandID = 0x105301 -> 전송 바이트 = 0x10 0x53 0x01 (BE)
+AckID     = 0x1053AA -> 전송 바이트 = 0x10 0x53 0xAA (BE)
+
+
+
+3.	전송 방식 정의
+3.1	Control/ACK 전송 (CAN 단일 프레임)
+- 대상 MSG ID : 0x32(REQ),   0x50(ACK)
+- 대상 명령     : SWU_REQUEST, SWU_START, DOWNLOAD_START, VERIFY_IMAGE 및 각 ACK
+- Payload 의미: 해당 CAN FD 프레임의 Data 영역 (DLC는 payload 길이 이상)
+
+3.2	DATA 전송 (IsoTP/CustomTP 다중 프레임)
+- 대상 MSG ID : 0x33
+- 대상 명령     : DATA(0x105301)
+- Payload 의미: IsoTP/CustomTP reassembly 후 “상위 메시지(Upper message)” payload
+
+- 주의(현상/원인)
+  CustomTP는 CAN FD 64B 기준 [HDR 2B + payload 62B] 구조로 전송 시 마지막 프레임도 62B로 채워지는 경우가 많아서,
+  실제 유효 데이터가 65536B여도 reassembly 결과 길이가 65596B처럼 “padding 포함”으로 커질 수 있다.
+-> 이를 확실히 해결하기 위해 DATA 상위 메시지에 payloadLength(유효 이미지 데이터 길이)를 포함한다.
+
+3.3	CustomTP(권장) APP_PDU 포맷(외부 래핑)
+- APP_PDU = Length(4B, BE) + MsgID(1B) + Payload(SWU Upper Message)
+- Length  = MsgID(1B) 제외한 “Payload 길이” 또는 프로젝트 규칙으로 통일
+- MsgID   = 0x33(DATA)
+- SWU 내부 필드(명령/헤더)는 BE, CustomTP 외부 Length도 BE 사용 
+
+4.	Payload 공통 구조
+4.1	Host → Target (Control, MSG ID=0x32)
+- CAN Payload = CommandID(3B, BE) + CommandPayload(variable)
+
+4.2	Host → Target (DATA, MSG ID=0x33)
+- DATA 상위 메시지(Upper message) Payload = “SWU DATA Upper Message” (10 장 참조)
+
+4.3	Target → Host (ACK, MSG ID=0x50)
+- CAN Payload = AckID(3B, BE) + AckPayload(variable)
+
+5.	주요 커맨드 정의
+5.1	Command / ACK Table
+MSG ID / Command ID	Command Name	Host → Target Payload	Target → Host Response (MSG ID / ACK ID)	Description
+0x32 / 0x105001	SWU_REQUEST	CommandPayload: ModelID, SWVersion	0x50 / 0x1050AA (ACK_SWU_REQUEST)	[App Gate] App이 (ModelID 일치 && SWVersion 불일치)일 때만: Flash에 SW Update Flag 저장 + Warm Reset으로 SBL 진입 트리거
+0x32 / 0x105101	SWU_START	CommandPayload  : ModelID, SWVersion,                                                                                     Date, ImageSize, TransferBlockSize	0x50 / 0x1051AA (ACK_SWU_START)	[헤더] SBL이 이미지 정보 수신 및 상태 초기화 + SWU Info(model_id, sw_ver, date)는 RAM에 캐시(Flash 저장은 VERIFY 성공 시 수행)
+0x32 / 0x105201	DOWNLOAD_START	없음	0x50 / 0x1052AA (ACK_DOWNLOAD_START)	[준비] 다운로드 시작(Flash Erase 포함)
+0x33 / 0x105301	DATA	Upper message (TP reassembly 후)	0x50 / 0x1053AA (ACK_DATA)	[데이터] 블록 단위 전송(IsoTP/CustomTP)
+0x32 / 0x105401	VERIFY_IMAGE	ExpectedCRC32(final, 4B)	0x50 / 0x1054AA (ACK_VERIFY)	[검증] 전체 이미지 CRC 검사 (성공 시 SWU Info(model_id, sw_ver, date)를 Flash에 저장 후 App 부팅)
+
+☞ NOTE
+Control/ACK CAN Payload 공통: CommandID(3B, BE) + CommandPayload / AckID(3B, BE) + AckPayload
+
+위 Table의 “Host → Target Payload”는 CommandPayload 기준으로 표기한다. (CommandID 3B는 공통)
+
+6.	SWU_REQUEST (Host -> App, CAN FD 단일 프레임)
+6.1	SWU_REQUEST Field (총 8B, BE)
+Field	Size	Description
+Model ID	4B	모델 식별자 (BE)
+SW Version	4B	업데이트 “대상/후보” 소프트웨어 버전 (BE)
+
+☞ NOTE
+SWU_REQUEST CAN Payload 전체 길이 = CommandID(3B) + CommandPayload(8B) = 11B (DLC는 11B 이상)
+
+6.2	Application 동작 규칙 (트리거/Flag 정책)
+- App은 “현재 정보(ModelID/SWVersion)”를 다음 우선순위로 결정한다.
+Flash SWU_INFO 영역이 “유효”하면                   : SWU_INFO의 ModelID/SWVersion 사용
+Flash SWU_INFO 영역이 “미기록/무효(예: 0xFFFFFFFF)”이면: 펌웨어 내 빌드 상수(현재 App 자체모델/버전) 사용
+
+App 수신 후 판단: 
+(1) Model_ID 불일치
+- ACK_SWU_REQUEST: FAIL (FailReason=0x0A MODEL_MISMATCH)
+- SW Update Flag 저장 금지
+- Warm Reset 금지
+
+(2) Model_ID 일치 & SWVersion 동일(업데이트 불필요)
+- ACK_SWU_REQUEST: FAIL (FailReason=0x09 VERSION_MATCH)
+- SW Update Flag 저장 금지
+- Warm Reset 금지
+
+(3) Model_ID 일치 & SWVersion 불일치(업데이트 필요)
+- Flash에 SW Update Flag 저장 (SWU_FLAG_FLASH_ADDRESS에 SWU_FLAG_VALUE 기록)
+- ACK_SWU_REQUEST: SUCCESS (FailReason=0x00)
+- App이 Warm Reset을 수행하여 SBL로 진입 트리거
+
+Host 권장 동작: 
+ACK_SWU_REQUEST가 SUCCESS일 때만 다음 단계(SWU_START)를 진행한다.
+FAIL(VERSION_MATCH/MODEL_MISMATCH)일 때는 세션을 중단한다.
+
+7.	SBL 부팅 시 SW Update Flag 처리
+7.1	Flag Check (총 8B, BE)
+- SBL은 부팅 직후 Flash에서 SW Update Flag를 읽는다.
+- Flag가 설정되어 있으면 SWU 모드로 진입하여 SWU_START를 대기한다.
+- Flag가 설정되어 있지 않으면 정상 부팅(일반 App 부팅) 경로를 따른다.
+
+7.2	Flag Clear 정책
+- SBL은 SW Update Flag를 지우지 않는다.
+- “업데이트 성공”의 기준은 “APP가 정상 실행”이다.
+- APP은 정상 실행 후, 초기화 과정 중  “마지막 Task”에서 SW Update Flag를 제거(erase)한다.
+- APP이 정상 실행 경로에 진입하지 못하면 Flag는 제거되지 않는다.
+8.	SWU_START Meta Header (Host → Target, CAN 단일 프레임)
+8.1	Meta Header Field (총 20B, BE)
+Field	Size	Description
+Model ID	4B	모델 식별자 (BE)
+SW Version	4B	소프트웨어 버전 (BE)
+Date 4B	uint32(YYYYMMDD), 예: 20260108 (BE)
+Image Size	4B	전체 이미지 크기(bytes) (BE)
+Transfer Block Size	4B	전송 블록 크기(bytes) (BE)
+
+☞ NOTE
+SWU_START CAN Payload 전체 길이 = CommandID(3B) + CommandPayload(20B) = 23B (DLC는 23B 이상)
+
+8.2	Transfer Block Size 정렬 조건
+- Transfer Block Size는 flash erase boundary에 정렬 권장(예: 64KB)
+
+8.3	SWU Info Flash 저장
+- SBL은 SWU_START를 수신하고 Meta 검증이 성공하면,
+  SWU Info(model_id, sw_ver, date)를 “RAM에 캐시”한다.
+
+- SBL은 VERIFY_IMAGE를 수신하고, 전체 이미지 CRC 검사 결과가 SUCCESS일 때만
+  캐시된 SWU Info(model_id, sw_ver, date)를 Flash(SWU_INFO_FLASH_ADDRESS)에 저장한다.
+
+- VERIFY_IMAGE가 FAIL이면 SWU Info를 Flash에 저장하지 않는다.
+
+- Flash에 저장하는 SWU Info는 model_id, sw_ver, date (총 12B) 3개 항목만 저장한다.
+
+9.	Erase 정책 (DOWNLOAD_START 처리)
+9.1	Erase 범위 정의
+- Image Size 기준으로 필요한 영역만 erase 한다.
+- 권장 예시
+  EraseLen (bytes) = align_up(ImageSize, FlashEraseBlockSize)
+UpdatePartitionBase부터 EraseLen 만큼 erase
+
+10.	DATA 전송 규격 (Host → Target, IsoTP/CustomTP)
+10.1	BlockIdx / TotalBlocks / Len 정의
+    BlockIdx    = 1-base
+    TotalBlocks = ceil(ImageSize / TransferBlockSize)
+마지막 BlockIdx    = TotalBlocks
+Len(idx)        = min(TransferBlockSize, ImageSize - (idx-1) * TransferBlockSize)
+
+10.2	DATA 상위 메시지(Upper message) 포맷 (reassembly 후, Upper Message)
+- MSG ID = 0x33
+- Upper Message Payload 구성: 
+Field	Size	Endian	설명
+CommandID	3B	BE	0x105301
+BlockIdx	2B	BE	1-base
+ExpectedCRC32	4B	BE	Streaming CRC32(이미지 payload만)
+PayloadLength	4B	BE	유효 이미지 payload길이(=Len(BlockIdx))
+ImagePayload	PayloadLength bytes	-	유효 이미지 데이터
+Padding(optional)	가변	-	TP 프레임 Padding 채움
+
+10.3	ExpectedCRC32 정의 (Streaming CRC, “payload만”)
+- Streaming CRC 상태는 “이미지 데이터(payload)” 바이트들만 순서대로 누적하여 계산한다.
+- CRC 계산에서 제외: 
+  - CommandID/BlockIdx/ExpectedCRC32/PayloadLength (헤더)
+- Padding
+
+10.4	BlockIdx 순서/재전송 규칙
+- Target은 expected_idx를 관리한다.
+- 수신 허용 조건: 
+  - received BlockIdx == expected_idx -> 처리
+  - 그 외 -> FAIL (FailReason=0x02 UNEXPECTED_BLOCKIDX)
+- 재전송: 
+- Host는 동일 BlockIdx를 다시 전송(최대 3회)
+
+10.5	CRC FAIL 롤백 규칙(Target)
+- 블록 처리 시작 시 crc_snapshot 저장
+- 블록 payload로 streaming CRC 업데이트 후 ExpectedCRC32 비교
+- CRC FAIL이면: 
+  - crc_snapshot 복원(롤백)
+  - Flash write 수행하지 않음
+  - ACK_DATA FAIL 전송
+  
+11.	ACK / 에러 응답 규격 (Error Response Specification)
+11.1	Status / FailReason 공통 규칙
+- Status(1B)
+  - 0x01 = SUCCESS
+  - 0x44 = FAIL
+- FailReason(1B)
+  - 항상 1B 포함
+  - SUCCESS일 때 FailReason = 0x00 고정
+- FAIL일 때 FailReason는 아래 코드표를 따른다. (11.7 표)
+
+11.2	ACK_SWU_REQUEST (0x50 / 0x1050AA)
+전송 방식        : CAN FD 단일 프레임
+   AckPayload: 
+Status(1B) + FailReason(1B)
+
+CAN Payload 전체: 
+AckID(3B, BE) + AckPayload(2B) = 5B (DLC는 5B 이상)
+
+Host 권장 동작  : 
+     SUCCESS: SWU_START 진행
+     FAIL   : 세션 중단 (VERSION_MATCH/MODEL_MISMATCH)
+
+11.3	ACK_SWU_START (0x50 / 0x1051AA)
+전송 방식        : CAN FD 단일 프레임
+   AckPayload: 
+Status(1B) + FailReason(1B)
+
+CAN Payload 전체: 
+AckID(3B, BE) + AckPayload(2B) = 5B (DLC는 5B 이상)
+
+Host 권장 동작  : 
+     SUCCESS: DOWNLOAD_START 진행
+     FAIL   : 세션 중단 (META_INVALID)
+
+11.4	ACK_DOWNLOAD_START (0x50 / 0x1052AA)
+전송 방식        : CAN FD 단일 프레임
+   AckPayload: 
+Status(1B) + FailReason(1B)
+
+CAN Payload 전체: 
+AckID(3B, BE) + AckPayload(2B) = 5B (DLC는 5B 이상)
+
+11.5	ACK_DATA (0x50 / 0x1053AA)
+전송 방식        : CAN FD 단일 프레임
+   AckPayload: 
+BlockIdx(2B, BE) + Status(1B) + FailReason(1B)
+
+CAN Payload 전체: 
+AckID(3B, BE) + AckPayload(4B) = 7B (DLC는 7B 이상)
+
+11.6	ACK_VERIFY (0x50 / 0x1054AA)
+전송 방식        : CAN FD 단일 프레임
+   AckPayload: 
+Status(1B) + FailReason(1B)
+
+CAN Payload 전체: 
+AckID(3B, BE) + AckPayload(2B) = 5B (DLC는 5B 이상)
+
+[SBL 동작]
+- ACK_VERIFY가 SUCCESS인 경우: 
+  - SBL은 캐시된 SWU Info(model_id, sw_ver, date) 3개 항목(총 12B)만 Flash(SWU_INFO_FLASH_ADDRESS)에 저장한다.
+  - 이후 재부팅/점프로 App을 실행한다.
+
+- ACK_VERIFY가 FAIL인 경우: 
+  - SBL은 SWU Info를 Flash에 저장하지 않는다.
+  - 세션 중단
+
+11.7	FailReason Code Table (1 Byte) 
+FailReason	Name	적용 ACK	의미(Trigger)	Host 권장 동작
+0x00	SUCCESS	모든 ACK	성공	다음 단계 진행
+0x01 CRC_MISMATCH	ACK_DATA/ACK_VERIFY	CRC 불일치(블록 streaming 또는 최종 CRC)	ACK_DATA: 블록 재전송(최대3), VERIFY: 세션 중단
+0x02 UNEXPECTED_BLOCKIDX	ACK_DATA	received_idx != expected_idx	expected_idx에 맞춰 재전송 또는 세션 재시작
+0x03 LENGTH_MISMATCH	ACK_DATA	payloadLength    != Len(idx)	동일 BlockIdx를 올바른 길이로 재전송
+0x04	FLASH_ACCESS_FAIL	ACK_DATA/ACK_VERIFY	Flash erase/program/read 실패	세션 중단 후 재시도(필요 시 리셋)
+0x05	RX_TIMEOUT	ACK_DATA	reassembly timeout(부분 수신 후 1초 경과)	동일 BlockIdx 재전송(최대3)
+0x06	META_INVALID	ACK_SWU_START	헤더 값 오류/정렬 위반/범위 초과	헤더 수정 후 SWU_START부터 재시작
+0x07	ERASE_ERROR	ACK_DOWNLOAD_START	erase 에러 발생	ImageSize/주소 확인 후 재시작
+0x08	STATE_ERROR	ACK_DATA/ACK_VERIFY	잘못된 상태에서 명령/데이터 수신	세션 재시작 (SWU_REQUEST부터)
+0x09 VERSION_MATCH	ACK_SWU_REQUEST	요청 SWVersion == CurrentSWVersion (업데이트 불필요)	세션 중단(진행 금지)
+0x0A MODEL_MISMATCH	ACK_SWU_REQUEST	요청 ModelID  != CurrentModelID	세션 중단(대상 모델 확인)
+0x0B DECOMPRESS_ERROR 
+
+12.	CRC32 규격
+12.1	CRC32 계산 방식
+Incremental/Streaming CRC
+ExpectedCRC32는 실제 수신되는 “유효 이미지 payload 길이(PayloadLength)” 기준으로 업데이트한다.
+마지막 블록도 PayloadLength만큼만 CRC 업데이트한다.
+
+12.2	CRC32 파라미터 고정 (CRC-32/ISO-HDLC = CRC-32/IEEE)
+INIT   = 0xFFFFFFFF
+POLY   = 0x04C11DB7
+REFIN  = TRUE
+REFOUT = TRUE
+XOROUT = 0xFFFFFFFF
+CHECK  = 0xCBF43926
+
+12.3	CRC-32/ISO-HDLC (CRC-32/IEEE) 파라미터 설명
+A. INIT = 0xFFFFFFFF
+ CRC 레지스터(32비트)의 초기값입니다.
+ 계산을 시작하기 전에 레지스터를 0xFFFFFFFF(모든 비트 1)로 채웁니다.
+ 이는 “모든 비트가 1인 상태에서 시작”하라는 의미로, 오류 검출 성능을 높이는 데 기여합니다.
+
+B. POLY = 0x04C11DB7
+ 생성 다항식(Generator Polynomial)입니다.
+ 실제 다항식은 다음과 같습니다 (x³² 항은 생략된 형태): 
+
+ x^32 + x^26 + x^23 + x^22 + x^16 + x^12 + x^11 +
+ x^10 + x^8 + x^7 + x^5 + x^4 + x^2 + x + 1
+
+ CRC 계산 시 데이터와 이 다항식으로 모듈로-2 나눗셈(비트 XOR)을 수행합니다.
+
+C. REFIN = TRUE
+ 입력 반전(Reflect In)을 적용합니다.
+ 입력 바이트(8비트)마다 비트 순서를 역순으로 바꾼 후 처리합니다.
+ 예: 입력 바이트 0x01 (00000001) → 0x80 (10000000)으로 반전
+
+ 대부분의 현대 CRC-32 구현이 이 방식을 사용합니다.
+
+D. REFOUT = TRUE
+ 출력 반전(Reflect Out)을 적용합니다.
+ 최종 32비트 CRC 값을 비트 단위로 완전히 역순으로 뒤집습니다.
+ REFIN과 함께 사용되면 “비트 반전된 알고리즘”이 됩니다.
+
+E. XOROUT = 0xFFFFFFFF
+ 최종 CRC 결과에 XOR 연산을 수행하는 값입니다.
+ 0xFFFFFFFF와 XOR하면 모든 비트가 반전됩니다. (최종 결과를 1의 보수로 만듦)
+ REFIN/REFOUT과 함께 사용되면 최종 CRC가 “반전된 형태”가 됩니다.
+
+F. CHECK = 0xCBF43926
+ 검증용 체크값 (Magic Check Value)입니다.
+ 입력 문자열 "123456789" (9바이트 ASCII)에 대해 위 파라미터로 CRC를 계산했을 때 나와야 하는 정답값입니다.
+ 구현이 올바른지 가장 빠르게 확인할 수 있는 표준 테스트 벡터입니다.
+
+G. 전체 CRC 계산 순서
+ CRC-32/ISO-HDLC 알고리즘 흐름
+
+ crc = 0xFFFFFFFF
+
+ for each byte: 
+ if  REFIN    : 
+        byte = bit_reverse(byte)
+
+    crc ^= (byte << 24)
+
+    for 8 bits            : 
+    if  (crc & 0x80000000): 
+            crc = (crc << 1) ^ POLY
+        else
+            crc << = 1
+
+ if REFOUT: 
+    crc = bit_reverse(crc)
+
+ crc ^= 0xFFFFFFFF
+
+13.	타임아웃 / 재시도 규칙
+13.1	Host 재시도 규칙
+- Block 재전송(블록 단위)        : 최대 3회
+- ACK_SWU_REQUEST 타임아웃/재시도: 100ms 마다 50회
+- ACK_SWU_START,            ACK_DOWNLOAD_START 타임아웃/재시도: 100ms 마다 3회
+- ACK_DATA 타임아웃/재시도       : 
+  - 블록 전송 완료 후 2초 대기
+- 타임아웃 시 동일 BlockIdx 블록 재전송(최대 3회)
+
+13.2	Target(SBL) reassembly timeout 처리 (DATA 전용)
+- IsoTP/CustomTP reassembly 중 부분 수신 후 1초 경과 시: 
+  - 현재 조립 중인 블록 버퍼 폐기
+  - crc_snapshot 복원
+  - expected_idx 유지
+- ACK_DATA 전송: 
+  - AckID   = 0x1053AA
+  - Payload = BlockIdx(조립 중이던 idx) + Status(0x44) + FailReason(0x05)
+
+14.	SWU 시퀀스(요약)
+14.1	App 구간
+- SWU_REQUEST(ModelID, SWVersion) -> ACK_SWU_REQUEST
+- ACK가 SUCCESS일 때만: 
+  - App이 Flash에 SW Update Flag 저장
+- Warm Reset -> SBL 진입 트리거
+
+14.2	SBL 구간
+- SBL 부팅 시 Flash의 SW Update Flag 확인
+  - Flag set    : SWU 모드 진입(SWU_START 대기)
+  - Flag not set: 정상 부팅(일반 App 부팅)
+- SWU_START(MetaHeader) -> ACK_SWU_START
+  - SBL은 SWU Info(model_id, sw_ver, date)를 RAM에 캐시
+- DOWNLOAD_START(erase) -> ACK_DOWNLOAD_START
+- 블록 반복 DATA -> ACK_DATA
+- VERIFY_IMAGE -> ACK_VERIFY
+- SUCCESS 시: 캐시된 SWU Info(model_id, sw_ver, date) 3개 항목(12B)을 Flash에 저장 후 App 부팅
+- FAIL 시   : Flash 저장하지 않음
+
+14.3	App 성공 실행 후
+- “업데이트 성공” = “APP가 정상 실행됨”
+- App은 초기화 과정 중 “마지막 Task”에서 SW Update Flag 제거(erase)
+
+15.	진행 상황
+15.1	진행 상황 표시
+- SWU_REQUEST 완료 -> 0% 유지
+- SWU_START ACK 수신 -> 2%
+- DOWNLOAD_START ACK 수신 -> 2%
+- 블록 전송 진행 -> 2%~90%
+- VERIFY ACK 수신 -> 100%
