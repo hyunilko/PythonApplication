@@ -248,8 +248,8 @@ class PCANManager:
         SWU PC Tool에서는 ACK(0x50) 프레임만 필요하므로,
         msg_id(하위 8bit)가 0x50인 메시지만 반환합니다.
 
-        Args     : 
-        timeout_s: 최대 대기 시간(초)
+        Args:
+            timeout_s: 최대 대기 시간(초)
 
         Returns:
             payload bytes (CAN frame data) 또는 timeout 시 None

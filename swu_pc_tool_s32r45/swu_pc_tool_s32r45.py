@@ -105,6 +105,7 @@ from swu_exceptions import (
 )
 
 from swu_logging import setup_logging, get_logger, GUILogHandler
+from swu_flash_image_create import create_flash_image
 
 
 @dataclass
@@ -506,8 +507,13 @@ def   __init__(self)         :
         self.btn_stop.clicked.connect(self.on_stop)
         self.btn_stop.setEnabled(False)
 
+        self.btn_create_flash = QPushButton("CreateFlashImage")
+        self.btn_create_flash.clicked.connect(self.on_create_flash_image)
+        self.btn_create_flash.setToolTip("ELF 파일을 S32R45 Flash 이미지로 변환")
+
         ctrl_row.addWidget(self.btn_start)
         ctrl_row.addWidget(self.btn_stop)
+        ctrl_row.addWidget(self.btn_create_flash)
         root.addLayout(ctrl_row)
 
           # ---- CAN Commands ----
@@ -564,7 +570,7 @@ def   __init__(self)         :
         self.sp_block.valueChanged.connect(self.update_block_info)
         self.sp_device_id.valueChanged.connect(self.request_op_mode)
 
-        self.resize(1090, 840)
+        self.resize(1090, 800)
 
           # 시작 시 OP_MODE 요청 (500ms 후)
         QTimer.singleShot(500, self.request_op_mode)
@@ -596,24 +602,24 @@ def   __init__(self)         :
             self.lb_op_mode.setText(f"UNKNOWN ({op_mode})")
             self.lb_op_mode.setStyleSheet("font-weight: bold; color: red;")
 
-    def send_can_cmd(self, cmd: int, cmd_name: str) -> None:
+    def send_can_cmd(self, cmd: int, cmd_name: str) -> None: 
         """CAN 명령 전송 및 ACK 대기"""
         mgr = None
-        try:
-            # PCAN 연결
-            channel = self.cmb_channel.currentText()
+        try: 
+              # PCAN 연결
+            channel    = self.cmb_channel.currentText()
             bitrate_fd = self.ed_bitrate.text().strip()
-            ifg_us = int(self.sp_ifg.value())
-            device_id = int(self.sp_device_id.value())
+            ifg_us     = int(self.sp_ifg.value())
+            device_id  = int(self.sp_device_id.value())
 
             mgr = PCANManager()
             mgr.open(channel=channel, bitrate_fd=bitrate_fd, ifg_us=ifg_us, is_std=True, use_brs=True)
             mgr.start_rx()
 
-            # CAN ID 계산: (DeviceID << 8) | MSG_ID
+                                              # CAN ID 계산: (DeviceID << 8) | MSG_ID
             can_id = (device_id << 8) | 0x32  # CONTROL CAN ID
 
-            # 명령 페이로드 생성 (3바이트 Big Endian)
+              # 명령 페이로드 생성 (3바이트 Big Endian)
             payload = bytes([
                 (cmd >> 16) & 0xFF,
                 (cmd >> 8) & 0xFF,
@@ -623,63 +629,63 @@ def   __init__(self)         :
             self.append_log(f"[TX] {cmd_name}: CAN_ID=0x{can_id:03X}, CMD=0x{cmd:06X}")
             mgr.send_bytes(can_id, payload)
 
-            # ACK 대기 (1초)
+              # ACK 대기 (1초)
             deadline = time.time() + 1.0
-            while time.time() < deadline:
+            while time.time() < deadline: 
                 remain = max(0.0, deadline - time.time())
-                try:
+                try: 
                     rx_payload, rx_can_id = mgr._rx_q.get(timeout=remain)
-                except queue.Empty:
+                except queue.Empty: 
                     break
 
-                # ACK 확인 (하위 8비트가 0x50)
+                  # ACK 확인 (하위 8비트가 0x50)
                 if (rx_can_id & 0xFF) == 0x50:
-                    # ACK 파싱: 3바이트 Big Endian
-                    if len(rx_payload) >= 3:
-                        ack_cmd = (rx_payload[0] << 16) | (rx_payload[1] << 8) | rx_payload[2]
-                        expected_ack = cmd | CAN_ACK_MASK
-                        if ack_cmd == expected_ack:
-                            # REQ_UNIQUE_ID인 경우 추가 데이터 파싱
-                            if cmd == CAN_CMD_REQ_UNIQUE_ID and len(rx_payload) >= 7:
-                                uid = (rx_payload[3] << 24) | (rx_payload[4] << 16) | (rx_payload[5] << 8) | rx_payload[6]
+                      # ACK 파싱: 3바이트 Big Endian
+                    if len(rx_payload) >  = 3:
+                       ack_cmd            = (rx_payload[0] << 16) | (rx_payload[1] << 8) | rx_payload[2]
+                       expected_ack       = cmd | CAN_ACK_MASK
+                    if ack_cmd           == expected_ack:
+                              # REQ_UNIQUE_ID인 경우 추가 데이터 파싱
+                            if cmd == CAN_CMD_REQ_UNIQUE_ID and len(rx_payload) > = 7:
+                               uid  = (rx_payload[3] << 24) | (rx_payload[4] << 16) | (rx_payload[5] << 8) | rx_payload[6]
                                 self.append_log(f"[RX] ACK_{cmd_name}: UniqueID=0x{uid:08X}")
-                            # CAL_MODE, OPR_MODE인 경우 op_mode 파싱 및 표시
-                            elif cmd in (CAN_CMD_CAL_MODE, CAN_CMD_OPR_MODE) and len(rx_payload) >= 4:
-                                op_mode = rx_payload[3]
+                              # CAL_MODE, OPR_MODE인 경우 op_mode 파싱 및 표시
+                            elif cmd in (CAN_CMD_CAL_MODE, CAN_CMD_OPR_MODE) and len(rx_payload) > = 4:
+                                 op_mode                                                           = rx_payload[3]
                                 self._update_op_mode_display(op_mode)
                                 self.append_log(f"[RX] ACK_{cmd_name}: {self.lb_op_mode.text()}")
-                            else:
+                            else: 
                                 self.append_log(f"[RX] ACK_{cmd_name}: OK")
                             return
-                        else:
+                        else: 
                             self.append_log(f"[RX] Unexpected ACK: 0x{ack_cmd:06X}")
 
             self.append_log(f"[FAIL] {cmd_name}: ACK timeout")
 
-        except Exception as e:
+        except Exception as e: 
             self.append_log(f"[ERROR] {cmd_name}: {e}")
-        finally:
-            if mgr:
-                try:
+           finally: 
+        if mgr    : 
+           try    : 
                     mgr.close()
-                except Exception:
+                except Exception: 
                     pass
 
-    def request_op_mode(self) -> None:
+    def request_op_mode(self) -> None: 
         """REQ_OP_MODE 명령 전송 및 결과 표시"""
         mgr = None
-        try:
-            channel = self.cmb_channel.currentText()
+        try: 
+            channel    = self.cmb_channel.currentText()
             bitrate_fd = self.ed_bitrate.text().strip()
-            ifg_us = int(self.sp_ifg.value())
-            device_id = int(self.sp_device_id.value())
+            ifg_us     = int(self.sp_ifg.value())
+            device_id  = int(self.sp_device_id.value())
 
             mgr = PCANManager()
             mgr.open(channel=channel, bitrate_fd=bitrate_fd, ifg_us=ifg_us, is_std=True, use_brs=True)
             mgr.start_rx()
 
-            can_id = (device_id << 8) | 0x32
-            cmd = CAN_CMD_REQ_OP_MODE
+            can_id  = (device_id << 8) | 0x32
+            cmd     = CAN_CMD_REQ_OP_MODE
             payload = bytes([
                 (cmd >> 16) & 0xFF,
                 (cmd >> 8) & 0xFF,
@@ -688,21 +694,21 @@ def   __init__(self)         :
 
             mgr.send_bytes(can_id, payload)
 
-            # ACK 대기 (1초)
+              # ACK 대기 (1초)
             deadline = time.time() + 1.0
-            while time.time() < deadline:
+            while time.time() < deadline: 
                 remain = max(0.0, deadline - time.time())
-                try:
+                try: 
                     rx_payload, rx_can_id = mgr._rx_q.get(timeout=remain)
-                except queue.Empty:
+                except queue.Empty: 
                     break
 
                 if (rx_can_id & 0xFF) == 0x50:
-                    if len(rx_payload) >= 4:
-                        ack_cmd = (rx_payload[0] << 16) | (rx_payload[1] << 8) | rx_payload[2]
-                        expected_ack = cmd | CAN_ACK_MASK
-                        if ack_cmd == expected_ack:
-                            op_mode = rx_payload[3]
+                if len(rx_payload) >   = 4:
+                   ack_cmd             = (rx_payload[0] << 16) | (rx_payload[1] << 8) | rx_payload[2]
+                   expected_ack        = cmd | CAN_ACK_MASK
+                if ack_cmd            == expected_ack:
+                   op_mode             = rx_payload[3]
                             self._update_op_mode_display(op_mode)
                             self.append_log(f"[RX] ACK_REQ_OP_MODE: {self.lb_op_mode.text()}")
                             return
@@ -711,29 +717,29 @@ def   __init__(self)         :
             self.lb_op_mode.setStyleSheet("font-weight: bold;")
             self.append_log("[FAIL] REQ_OP_MODE: ACK timeout")
 
-        except Exception as e:
+        except Exception as e: 
             self.lb_op_mode.setText("ERROR")
             self.lb_op_mode.setStyleSheet("font-weight: bold; color: red;")
             self.append_log(f"[ERROR] REQ_OP_MODE: {e}")
-        finally:
-            if mgr:
-                try:
+           finally: 
+        if mgr    : 
+           try    : 
                     mgr.close()
-                except Exception:
+                except Exception: 
                     pass
 
-    def on_browse(self) -> None:
+    def on_browse(self) -> None: 
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select firmware image", "", "Binary files (*.bin *.img *.appimage *.*)"
+            self, "Select firmware image", "", "Binary/ELF files (*.bin *.elf *.img *.appimage *.*)"
         )
-        if not path:
+        if not path: 
             return
 
-        # 이전 임시 압축 파일 삭제
-        if self.compressed_path and os.path.exists(self.compressed_path):
-            try:
+          # 이전 임시 압축 파일 삭제
+        if self.compressed_path and os.path.exists(self.compressed_path): 
+           try                                                          : 
                 os.remove(self.compressed_path)
-            except Exception:
+            except Exception: 
                 pass
             self.compressed_path = None
             self.compressed_size = 0
@@ -741,31 +747,31 @@ def   __init__(self)         :
         self.bin_path = path
         self.ed_file.setText(path)
 
-        # Auto-detect SW Version from filename (e.g., _0x00010001.release.appimage)
+          # Auto-detect SW Version from filename (e.g., _0x00010001.release.appimage)
         auto_swver = extract_sw_version_from_filename(path)
-        if auto_swver:
+        if auto_swver: 
             self.ed_swver.setText(auto_swver)
 
-        try:
+        try: 
             self.bin_size = os.path.getsize(path)
             self.lb_size.setText(f"{self.bin_size:,} bytes")
-        except Exception:
+        except Exception: 
             self.bin_size = 0
             self.lb_size.setText("N/A")
 
-        # bzip2 압축
-        try:
+          # bzip2 압축
+        try: 
             self.lb_compressed_size.setText("Compressing...")
             QApplication.processEvents()  # UI 업데이트
 
-            with open(path, "rb") as f:
+            with open(path, "rb") as f: 
                 original_data = f.read()
 
             compressed_data = bz2.compress(original_data, compresslevel=9)
 
-            # 임시 파일에 압축 데이터 저장
+              # 임시 파일에 압축 데이터 저장
             temp_fd, temp_path = tempfile.mkstemp(suffix=".bz2")
-            with os.fdopen(temp_fd, "wb") as temp_file:
+            with os.fdopen(temp_fd, "wb") as temp_file: 
                 temp_file.write(compressed_data)
 
             self.compressed_path = temp_path
@@ -776,16 +782,17 @@ def   __init__(self)         :
                 f"{self.compressed_size:,} bytes ({ratio:.1f}% 감소)"
             )
 
-        except Exception as e:
+        except Exception as e: 
             self.compressed_path = None
             self.compressed_size = 0
             self.lb_compressed_size.setText(f"압축 실패: {e}")
 
         self.update_block_info()
 
-    def set_running(self, running: bool) -> None:
+    def set_running(self, running: bool) -> None: 
         self.btn_start.setEnabled(not running)
         self.btn_browse.setEnabled(not running)
+        self.btn_create_flash.setEnabled(not running)
 
         self.sp_block.setEnabled(not running)
         self.ed_model.setEnabled(not running)
@@ -802,7 +809,7 @@ def   __init__(self)         :
         self.sp_ack_download_timeout.setEnabled(not running)
         self.sp_ack_verify_timeout.setEnabled(not running)
 
-        # CAN 명령 버튼
+          # CAN 명령 버튼
         self.btn_hi.setEnabled(not running)
         self.btn_reset.setEnabled(not running)
         self.btn_sensor_start.setEnabled(not running)
@@ -813,12 +820,81 @@ def   __init__(self)         :
 
         self.btn_stop.setEnabled(running)
 
-    def on_start(self) -> None:
-        if not self.bin_path:
+    def on_create_flash_image(self) -> None: 
+        """ELF 파일을 Flash 이미지로 변환"""
+        if not self.bin_path: 
+            QMessageBox.warning(self, "CreateFlashImage", "먼저 ELF/바이너리 파일을 Load 하십시오.")
+            return
+
+          # 출력 파일 경로 선택
+        import datetime as _dt
+        date_suffix  = _dt.datetime.now().strftime("%y%m%d")
+        default_name = f"RSDK_S32DS_Flash_Image_{date_suffix}.bz2"
+
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Flash Image",
+            os.path.join(os.path.dirname(self.bin_path), default_name),
+            "Flash Image (*.bz2)"
+        )
+
+        if not output_path: 
+            return
+
+        self.log_view.clear()
+        self.progress.setValue(0)
+        self.lb_status.setText("Creating Flash Image...")
+        self.set_running(True)
+        QApplication.processEvents()
+
+            try                                          : 
+        def progress_callback(percent: int, message: str): 
+                self.progress.setValue(percent)
+                self.lb_status.setText(message)
+                self.append_log(f"[{percent:3d}%] {message}")
+                QApplication.processEvents()
+
+            out_path, info = create_flash_image(
+                self.bin_path,
+                output_path,
+                progress_callback
+            )
+
+            self.append_log("")
+            self.append_log("=== Flash Image Created Successfully ===")
+            self.append_log(f"Output file: {out_path}")
+            self.append_log(f"Original size: {info['original_size']:,} bytes")
+            self.append_log(f"Compressed size: {info['compressed_size']:,} bytes")
+            self.append_log(f"CRC32: {info['crc_32_hex']}")
+            self.append_log(f"YAML header size: {info['yaml_header_size']:,} bytes")
+            self.append_log(f"Padding size: {info['padding_size']:,} bytes")
+            self.append_log(f"Final size: {info['final_size']:,} bytes")
+            self.append_log(f"Compression ratio: {info['compression_ratio']:.1f}%")
+
+            self.lb_status.setText("Flash Image Created")
+            QMessageBox.information(
+                self,
+                "CreateFlashImage",
+                f"Flash 이미지가 생성되었습니다.\n\n"
+                f"파일: {out_path}\n"
+                f"크기: {info['final_size']:,} bytes\n"
+                f"CRC32: {info['crc_32_hex']}"
+            )
+
+        except Exception as e: 
+            self.append_log(f"[ERROR] {e}")
+            self.lb_status.setText("Failed")
+            QMessageBox.critical(self, "CreateFlashImage", f"Flash 이미지 생성 실패:\n{e}")
+
+        finally: 
+            self.set_running(False)
+
+    def on_start(self) -> None: 
+    if  not self.bin_path     : 
             QMessageBox.warning(self, "SWU", "먼저 firmware 파일을 Load 하십시오.")
             return
 
-        if not self.compressed_path or self.compressed_size <= 0:
+        if not self.compressed_path or self.compressed_size < = 0:
             QMessageBox.warning(self, "SWU", "파일 압축에 실패했습니다. 파일을 다시 로드하십시오.")
             return
 
