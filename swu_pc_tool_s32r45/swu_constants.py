@@ -68,12 +68,19 @@ DEFAULT_PCAN_CHANNEL = "PCAN_USBBUS1"
 #     "data_brp=1,data_tseg1=7,data_tseg2=2,data_sjw=2,data_ssp_offset=8"
 # )
 
-# Data Bit Rate 2Mbit/s
+# Data Bit Rate 4Mbit/s
 DEFAULT_BITRATE_FD = (
     "f_clock=80000000,"
     "nom_brp=1,nom_tseg1=63,nom_tseg2=16,nom_sjw=16,"
-    "data_brp=1,data_tseg1=29,data_tseg2=10,data_sjw=10,data_ssp_offset=30"
+    "data_brp=1,data_tseg1=14,data_tseg2=5,data_sjw=5,data_ssp_offset=15"
 )
+
+# Data Bit Rate 2Mbit/s
+# DEFAULT_BITRATE_FD = (
+#     "f_clock=80000000,"
+#     "nom_brp=1,nom_tseg1=63,nom_tseg2=16,nom_sjw=16,"
+#     "data_brp=1,data_tseg1=29,data_tseg2=10,data_sjw=10,data_ssp_offset=30"
+# )
 
 DEFAULT_IFG_US = 1500  # 인터프레임 갭 (마이크로초)
 

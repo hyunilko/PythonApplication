@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QFormLayout, QPushButton, QLabel, QLineEdit,
     QSpinBox, QComboBox, QFileDialog, QProgressBar, QTextEdit,
-    QMessageBox
+    QMessageBox, QTabWidget
 )
 
 from pcan_manager import PCANManager
@@ -391,9 +391,18 @@ class MainWindow(QMainWindow):
         self.compressed_path: Optional[str] = None    # 압축 파일 경로
         self.compressed_size: int = 0                 # 압축 파일 크기
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        # ---- Tab widget ----
+        from mon_tab import MonitorTab
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+
+        swu_widget = QWidget()
+        tabs.addTab(swu_widget, "SWU Update")
+
+        self.mon_tab = MonitorTab()
+        tabs.addTab(self.mon_tab, "Monitor (Heartbeat)")
+
+        root = QVBoxLayout(swu_widget)
 
         # ---- Connection group ----
         grp_conn = QGroupBox("PCAN Connection")
@@ -570,7 +579,7 @@ class MainWindow(QMainWindow):
         self.sp_block.valueChanged.connect(self.update_block_info)
         self.sp_device_id.valueChanged.connect(self.request_op_mode)
 
-        self.resize(1090, 800)
+        self.resize(1200, 900)
 
         # 시작 시 OP_MODE 요청 (500ms 후)
         QTimer.singleShot(500, self.request_op_mode)
