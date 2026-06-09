@@ -62,18 +62,18 @@ RETRY_DATA_BLOCK_ATTEMPTS = 3
 # ==============================================================================
 DEFAULT_PCAN_CHANNEL = "PCAN_USBBUS1"
 # Data Bit Rate 8Mbit/s
-# DEFAULT_BITRATE_FD = (
-#     "f_clock=80000000,"
-#     "nom_brp=1,nom_tseg1=63,nom_tseg2=16,nom_sjw=16,"
-#     "data_brp=1,data_tseg1=7,data_tseg2=2,data_sjw=2,data_ssp_offset=8"
-# )
-
-# Data Bit Rate 4Mbit/s
 DEFAULT_BITRATE_FD = (
     "f_clock=80000000,"
     "nom_brp=1,nom_tseg1=63,nom_tseg2=16,nom_sjw=16,"
-    "data_brp=1,data_tseg1=14,data_tseg2=5,data_sjw=5,data_ssp_offset=15"
+    "data_brp=1,data_tseg1=7,data_tseg2=2,data_sjw=2,data_ssp_offset=8"
 )
+
+# Data Bit Rate 4Mbit/s
+# DEFAULT_BITRATE_FD = (
+#     "f_clock=80000000,"
+#     "nom_brp=1,nom_tseg1=63,nom_tseg2=16,nom_sjw=16,"
+#     "data_brp=1,data_tseg1=14,data_tseg2=5,data_sjw=5,data_ssp_offset=15"
+# )
 
 # Data Bit Rate 2Mbit/s
 # DEFAULT_BITRATE_FD = (

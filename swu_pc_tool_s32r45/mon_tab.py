@@ -1,9 +1,9 @@
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 mon_tab.py
 
-S32R45 Heartbeat Monitor GUI Tab (matplotlib 불필요 - PyQt6 QPainter 사용).
+S32R45 Heartbeat Monitor GUI Tab.
 """
 
 from __future__ import annotations

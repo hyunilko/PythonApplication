@@ -1,5 +1,5 @@
-  #!/usr/bin/env python3
-  # -*- coding: utf-8 -*-
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 mon_receiver.py
 
@@ -84,7 +84,7 @@ def parse_mon_payload(payload: bytes) -> Optional[MonPacket]:
     if cmd != CAN_CMD_HEART_BEAT:
         return None
 
-    uniq_id = struct.unpack_from('>I', payload, 3)[0]
+    uniq_id = struct.unpack_from('<I', payload, 3)[0]
 
     pkt = payload[_PKT_OFFSET:]
     if len(pkt) < _PKT_SIZE:
